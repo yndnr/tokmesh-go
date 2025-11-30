@@ -1,0 +1,68 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  auto-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          GOOS=linux GOARCH=amd64 go build -o dist/tokmesh-server ./cmd/tokmesh-server
+          GOOS=linux GOARCH=amd64 go build -o dist/tokmesh-cli ./cmd/tokmesh-cli
+
+      - name: Determine release notes reference
+        id: notes
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          NOTE_PATH="docs/releases/${TAG}.md"
+          if [ -f "${NOTE_PATH}" ]; then
+            echo "notes=详见 ${NOTE_PATH}." >> $GITHUB_OUTPUT
+          else
+            echo "notes=TokMesh-Go ${TAG} 自动发布版本。" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: TokMesh-Go ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.notes }}
+
+      - name: Upload tokmesh-server binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: dist/tokmesh-server
+          asset_name: tokmesh-server-linux-amd64
+          asset_content_type: application/octet-stream
+
+      - name: Upload tokmesh-cli binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: dist/tokmesh-cli
+          asset_name: tokmesh-cli-linux-amd64
+          asset_content_type: application/octet-stream
