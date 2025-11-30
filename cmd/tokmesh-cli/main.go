@@ -1,3 +1,8 @@
+// Package main 提供 tokmesh-cli 命令行工具，用于管理 TokMesh 服务器实例。
+// 支持会话管理操作（status、cleanup、revoke、kick）、证书管理（CSR 生成、
+// profile 安装）以及通过 HTTP API 调用的管理任务。
+// CLI 可使用 mTLS 证书或存储在 profile 中的 API Key 进行身份验证
+// （默认位置为 ~/.tokmesh/cli.yaml）。
 package main
 
 import (
@@ -430,9 +435,12 @@ func newServerFlagSet(name string) (*flag.FlagSet, *serverCommandFlags) {
 }
 
 func (o *serverCommandFlags) buildClient() (*http.Client, error) {
-	certPath, keyPath, caPath, err := resolveProfilePaths(o.profile, o.cert, o.key, o.ca)
+	certPath, keyPath, caPath, profileAPIKey, err := resolveProfilePaths(o.profile, o.cert, o.key, o.ca, o.apiKey)
 	if err != nil {
 		return nil, err
+	}
+	if o.apiKey == "" {
+		o.apiKey = profileAPIKey
 	}
 	return buildHTTPClient(certPath, keyPath, caPath)
 }
@@ -489,6 +497,7 @@ func runCertInstall(args []string) error {
 	cert := fs.String("cert", "", "certificate PEM path")
 	key := fs.String("key", "", "private key PEM path")
 	ca := fs.String("ca", "", "CA bundle PEM path")
+	apiKey := fs.String("api-key", "", "API key for this profile")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -506,7 +515,12 @@ func runCertInstall(args []string) error {
 	if cfg.Profiles == nil {
 		cfg.Profiles = make(map[string]cliProfile)
 	}
-	cfg.Profiles[*profile] = cliProfile{Cert: *cert, Key: *key, CA: *ca}
+	cfg.Profiles[*profile] = cliProfile{
+		Cert:   *cert,
+		Key:    *key,
+		CA:     *ca,
+		APIKey: *apiKey,
+	}
 	return saveCLIConfig(cfgPath, cfg)
 }
 
@@ -578,8 +592,8 @@ func printCertHelp() {
 可用子命令：
   csr       生成客户端证书 CSR 与私钥
             示例：tokmesh-cli -cmd cert csr -cn ops.example.com -hosts ops.example.com,127.0.0.1 -out csr.pem -key-out csr.key
-  install   将证书/私钥/CA 安装到 CLI 配置文件
-            示例：tokmesh-cli -cmd cert install -profile ops -cert ops.pem -key ops-key.pem -ca ca.pem
+  install   将证书/私钥/CA/API Key 安装到 CLI 配置文件
+            示例：tokmesh-cli -cmd cert install -profile ops -cert ops.pem -key ops-key.pem -ca ca.pem -api-key xxx
   list      查看已配置的证书 profile
             示例：tokmesh-cli -cmd cert list
   remove    删除指定 profile
@@ -607,5 +621,6 @@ tokmesh-cli <command> [options]
   --admin, -a      管理端地址，默认读取 TOKMESH_ADMIN_ADDR
   --profile, -p    CLI 证书 profile，默认 TOKMESH_CLI_PROFILE
   --cert/-c, --key/-k, --ca  直接指定证书/私钥/CA
+  --api-key        业务/管理 API Key，默认读取 TOKMESH_API_KEY 或 profile 中的 api_key
 `)
 }
