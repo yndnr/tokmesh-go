@@ -20,11 +20,38 @@ jobs:
       - name: Run tests
         run: go test ./...
 
-      - name: Build binaries
+      - name: Build and package artifacts
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           mkdir -p dist
-          GOOS=linux GOARCH=amd64 go build -o dist/tokmesh-server ./cmd/tokmesh-server
-          GOOS=linux GOARCH=amd64 go build -o dist/tokmesh-cli ./cmd/tokmesh-cli
+          combos=(
+            "linux amd64"
+            "linux arm64"
+            "windows amd64"
+            "windows arm64"
+          )
+          for combo in "${combos[@]}"; do
+            read GOOS GOARCH <<<"${combo}"
+            BIN_DIR="dist/${GOOS}-${GOARCH}"
+            mkdir -p "${BIN_DIR}"
+            EXT=""
+            if [ "${GOOS}" = "windows" ]; then
+              EXT=".exe"
+            fi
+            echo "Building ${GOOS}/${GOARCH}"
+            GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=0 go build -o "${BIN_DIR}/tokmesh-server${EXT}" ./cmd/tokmesh-server
+            GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=0 go build -o "${BIN_DIR}/tokmesh-cli${EXT}" ./cmd/tokmesh-cli
+            PKG_NAME="TokMesh-${GOOS}-${TAG}-${GOARCH}"
+            if [ "${GOOS}" = "windows" ]; then
+              (cd "${BIN_DIR}" && zip -r "../${PKG_NAME}.zip" tokmesh-server.exe tokmesh-cli.exe >/dev/null)
+              rm -rf "${BIN_DIR}"
+            else
+              (cd "${BIN_DIR}" && tar -czf "../${PKG_NAME}.tar.gz" tokmesh-server tokmesh-cli)
+              rm -rf "${BIN_DIR}"
+            fi
+          done
 
       - name: Determine release notes reference
         id: notes
@@ -32,37 +59,18 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           NOTE_PATH="docs/releases/${TAG}.md"
           if [ -f "${NOTE_PATH}" ]; then
-            echo "notes=详见 ${NOTE_PATH}." >> $GITHUB_OUTPUT
+            echo "body_path=${NOTE_PATH}" >> "$GITHUB_OUTPUT"
           else
-            echo "notes=TokMesh-Go ${TAG} 自动发布版本。" >> $GITHUB_OUTPUT
+            FALLBACK="/tmp/release-notes.txt"
+            echo "TokMesh-Go ${TAG} 自动发布版本。" > "${FALLBACK}"
+            echo "body_path=${FALLBACK}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create GitHub release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
+          name: TokMesh-Go ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          release_name: TokMesh-Go ${{ github.ref_name }}
-          body: ${{ steps.notes.outputs.notes }}
-
-      - name: Upload tokmesh-server binary
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: dist/tokmesh-server
-          asset_name: tokmesh-server-linux-amd64
-          asset_content_type: application/octet-stream
-
-      - name: Upload tokmesh-cli binary
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: dist/tokmesh-cli
-          asset_name: tokmesh-cli-linux-amd64
-          asset_content_type: application/octet-stream
+          body_path: ${{ steps.notes.outputs.body_path }}
+          files: |
+            dist/TokMesh-*
