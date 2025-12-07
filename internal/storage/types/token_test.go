@@ -1,9 +1,12 @@
 package types
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	tmerr "github.com/yndnr/tokmesh-go/pkg/errors"
 )
 
 func TestToken_Validate(t *testing.T) {
@@ -27,29 +30,29 @@ func TestToken_Validate(t *testing.T) {
 	// 测试无效 TokenID（空）
 	tk := validToken.Clone()
 	tk.TokenID = ""
-	if err := tk.Validate(); err != ErrInvalidTokenID {
-		t.Errorf("Expected ErrInvalidTokenID, got %v", err)
+	if err := tk.Validate(); !errors.Is(err, tmerr.ErrTokenIDInvalid) {
+		t.Errorf("Expected ErrTokenIDInvalid, got %v", err)
 	}
 
 	// 测试无效 TokenHash（长度不对）
 	tk = validToken.Clone()
 	tk.TokenHash = "short"
-	if err := tk.Validate(); err != ErrInvalidTokenHash {
-		t.Errorf("Expected ErrInvalidTokenHash, got %v", err)
+	if err := tk.Validate(); !errors.Is(err, tmerr.ErrTokenHashInvalid) {
+		t.Errorf("Expected ErrTokenHashInvalid, got %v", err)
 	}
 
 	// 测试无效 UserID（空）
 	tk = validToken.Clone()
 	tk.UserID = ""
-	if err := tk.Validate(); err != ErrInvalidUserID {
-		t.Errorf("Expected ErrInvalidUserID, got %v", err)
+	if err := tk.Validate(); !errors.Is(err, tmerr.ErrUserIDInvalid) {
+		t.Errorf("Expected ErrUserIDInvalid, got %v", err)
 	}
 
 	// 测试无效 Scope（过长）
 	tk = validToken.Clone()
 	tk.Scope = strings.Repeat("a", 1025)
-	if err := tk.Validate(); err != ErrInvalidScope {
-		t.Errorf("Expected ErrInvalidScope, got %v", err)
+	if err := tk.Validate(); !errors.Is(err, tmerr.ErrScopeTooLong) {
+		t.Errorf("Expected ErrScopeTooLong, got %v", err)
 	}
 }
 

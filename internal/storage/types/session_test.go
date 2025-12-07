@@ -1,9 +1,12 @@
 package types
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	tmerr "github.com/yndnr/tokmesh-go/pkg/errors"
 )
 
 func TestSession_Validate(t *testing.T) {
@@ -29,49 +32,49 @@ func TestSession_Validate(t *testing.T) {
 	// 测试无效 SessionID（空）
 	s := validSession.Clone()
 	s.SessionID = ""
-	if err := s.Validate(); err != ErrInvalidSessionID {
-		t.Errorf("Expected ErrInvalidSessionID, got %v", err)
+	if err := s.Validate(); !errors.Is(err, tmerr.ErrSessionIDInvalid) {
+		t.Errorf("Expected ErrSessionIDInvalid, got %v", err)
 	}
 
 	// 测试无效 SessionID（过长）
 	s = validSession.Clone()
 	s.SessionID = strings.Repeat("a", 65)
-	if err := s.Validate(); err != ErrInvalidSessionID {
-		t.Errorf("Expected ErrInvalidSessionID for long ID, got %v", err)
+	if err := s.Validate(); !errors.Is(err, tmerr.ErrSessionIDInvalid) {
+		t.Errorf("Expected ErrSessionIDInvalid for long ID, got %v", err)
 	}
 
 	// 测试无效 UserID（空）
 	s = validSession.Clone()
 	s.UserID = ""
-	if err := s.Validate(); err != ErrInvalidUserID {
-		t.Errorf("Expected ErrInvalidUserID, got %v", err)
+	if err := s.Validate(); !errors.Is(err, tmerr.ErrUserIDInvalid) {
+		t.Errorf("Expected ErrUserIDInvalid, got %v", err)
 	}
 
 	// 测试无效 UserID（过长）
 	s = validSession.Clone()
 	s.UserID = strings.Repeat("a", 129)
-	if err := s.Validate(); err != ErrInvalidUserID {
-		t.Errorf("Expected ErrInvalidUserID for long UserID, got %v", err)
+	if err := s.Validate(); !errors.Is(err, tmerr.ErrUserIDInvalid) {
+		t.Errorf("Expected ErrUserIDInvalid for long UserID, got %v", err)
 	}
 
 	// 测试无效 ClientIP（过长）
 	s = validSession.Clone()
 	s.ClientIP = strings.Repeat("a", 46)
-	if err := s.Validate(); err != ErrInvalidClientIP {
-		t.Errorf("Expected ErrInvalidClientIP, got %v", err)
+	if err := s.Validate(); !errors.Is(err, tmerr.ErrClientIPInvalid) {
+		t.Errorf("Expected ErrClientIPInvalid, got %v", err)
 	}
 
 	// 测试无效 UserAgent（过长）
 	s = validSession.Clone()
 	s.UserAgent = strings.Repeat("a", 2049)
-	if err := s.Validate(); err != ErrInvalidUserAgent {
-		t.Errorf("Expected ErrInvalidUserAgent, got %v", err)
+	if err := s.Validate(); !errors.Is(err, tmerr.ErrUserAgentTooLong) {
+		t.Errorf("Expected ErrUserAgentTooLong, got %v", err)
 	}
 
 	// 测试过多的 LocalSessions
 	s = validSession.Clone()
 	s.LocalSessions = make([]*LocalSession, 11)
-	if err := s.Validate(); err != ErrTooManyLocalSessions {
+	if err := s.Validate(); !errors.Is(err, tmerr.ErrTooManyLocalSessions) {
 		t.Errorf("Expected ErrTooManyLocalSessions, got %v", err)
 	}
 }

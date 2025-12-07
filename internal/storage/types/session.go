@@ -1,6 +1,11 @@
 package types
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+
+	tmerr "github.com/yndnr/tokmesh-go/pkg/errors"
+)
 
 // Session 表示一个用户会话
 type Session struct {
@@ -69,27 +74,37 @@ func (s *Session) Clone() *Session {
 func (s *Session) Validate() error {
 	// 验证 SessionID
 	if len(s.SessionID) == 0 || len(s.SessionID) > 64 {
-		return ErrInvalidSessionID
+		return tmerr.ErrSessionIDInvalid.
+			WithDetails("actual_length", fmt.Sprintf("%d", len(s.SessionID))).
+			WithDetails("max_length", "64")
 	}
 
 	// 验证 UserID
 	if len(s.UserID) == 0 || len(s.UserID) > 128 {
-		return ErrInvalidUserID
+		return tmerr.ErrUserIDInvalid.
+			WithDetails("actual_length", fmt.Sprintf("%d", len(s.UserID))).
+			WithDetails("max_length", "128")
 	}
 
 	// 验证 ClientIP
 	if len(s.ClientIP) > 45 {
-		return ErrInvalidClientIP
+		return tmerr.ErrClientIPInvalid.
+			WithDetails("actual_length", fmt.Sprintf("%d", len(s.ClientIP))).
+			WithDetails("max_length", "45")
 	}
 
 	// 验证 UserAgent
 	if len(s.UserAgent) > 2048 {
-		return ErrInvalidUserAgent
+		return tmerr.ErrUserAgentTooLong.
+			WithDetails("actual_length", fmt.Sprintf("%d", len(s.UserAgent))).
+			WithDetails("max_length", "2048")
 	}
 
 	// 验证 DeviceID
 	if len(s.DeviceID) > 256 {
-		return ErrInvalidDeviceID
+		return tmerr.ErrDeviceIDTooLong.
+			WithDetails("actual_length", fmt.Sprintf("%d", len(s.DeviceID))).
+			WithDetails("max_length", "256")
 	}
 
 	// 验证 Metadata 大小（序列化后 ≤ 4KB）
@@ -99,13 +114,17 @@ func (s *Session) Validate() error {
 			return err
 		}
 		if len(data) > 4096 {
-			return ErrMetadataTooLarge
+			return tmerr.ErrMetadataTooLarge.
+				WithDetails("actual_size", fmt.Sprintf("%d bytes", len(data))).
+				WithDetails("max_size", "4096 bytes")
 		}
 	}
 
 	// 验证 LocalSessions 数量
 	if len(s.LocalSessions) > 10 {
-		return ErrTooManyLocalSessions
+		return tmerr.ErrTooManyLocalSessions.
+			WithDetails("actual_count", fmt.Sprintf("%d", len(s.LocalSessions))).
+			WithDetails("max_count", "10")
 	}
 
 	return nil
