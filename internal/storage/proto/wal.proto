@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "github.com/yndnr/tokmesh-go/internal/storage/proto";
+
+// WALEntry WAL 日志条目
+message WALEntry {
+  uint64 sequence = 1;      // 序列号（单调递增）
+  int64 timestamp_ns = 2;   // 纳秒时间戳
+  OpType op_type = 3;       // 操作类型
+  bytes key = 4;            // 主键（session_id 或 token_id）
+  bytes value = 5;          // 序列化后的对象（仅 SET/UPDATE）
+  uint32 crc32 = 6;         // 校验和（防止数据损坏）
+}
+
+// OpType 操作类型
+enum OpType {
+  SET = 0;      // 创建/覆盖
+  DELETE = 1;   // 删除
+  EXPIRE = 2;   // 过期清理（用于审计追踪）
+}

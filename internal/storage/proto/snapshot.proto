@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "github.com/yndnr/tokmesh-go/internal/storage/proto";
+
+// Snapshot 快照
+message Snapshot {
+  uint64 version = 1;           // 快照格式版本（用于兼容性）
+  uint64 wal_sequence = 2;      // 对应的 WAL 序列号（恢复起点）
+  int64 timestamp_ns = 3;       // 快照生成时间
+  repeated bytes sessions = 4;  // Session 序列化数据
+  repeated bytes tokens = 5;    // Token 序列化数据
+  SnapshotMeta meta = 6;        // 元数据
+}
+
+// SnapshotMeta 快照元数据
+message SnapshotMeta {
+  uint64 session_count = 1;  // 会话数量
+  uint64 token_count = 2;    // 令牌数量
+  uint32 checksum = 3;       // 整体校验和（CRC32）
+}
