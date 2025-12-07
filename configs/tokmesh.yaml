@@ -1,0 +1,62 @@
+# TokMesh 存储引擎配置文件示例
+# 这是一个包含所有默认设置的示例配置文件
+
+# 数据存储目录
+data_dir: /var/lib/tokmesh
+
+# 容量限制
+max_sessions: 1000000      # 最大会话数量（100 万）
+max_tokens: 2000000        # 最大令牌数量（200 万）
+max_memory_bytes: 4294967296  # 最大内存使用（4GB）
+
+# 分片配置
+shard_count: 256           # 分片数量（2 的幂次方，推荐 128/256/512）
+
+# TTL 配置
+session_ttl: 604800000000000   # 会话默认 TTL（7 天，纳秒）
+token_ttl: 2592000000000000    # 令牌默认 TTL（30 天，纳秒）
+cleanup_interval: 300000000000 # 清理间隔（5 分钟，纳秒）
+
+# WAL 配置
+wal:
+  enabled: true            # 是否启用 WAL
+  max_size_mb: 256         # 单个 WAL 文件最大大小（256 MB）
+  sync_writes: true        # 是否同步写入（fsync）
+  buffer_size: 4096        # 写入缓冲区大小（4 KB）
+
+# 快照配置
+snapshot:
+  enabled: true            # 是否启用快照
+  interval: 3600000000000  # 快照间隔（1 小时，纳秒）
+  keep_count: 3            # 保留快照数量
+  compress: true           # 是否压缩快照
+
+# 内存淘汰配置
+eviction:
+  enabled: true            # 是否启用内存淘汰
+  threshold: 0.9           # 内存使用阈值（90%）
+  batch_size: 1000         # 每次淘汰数量
+
+# 磁盘监控配置
+disk_monitor:
+  enabled: true            # 是否启用磁盘监控
+  warning_threshold: 0.85  # 警告阈值（85%）
+  critical_threshold: 0.95 # 严重阈值（95%）
+  check_interval: 60000000000  # 检查间隔（1 分钟，纳秒）
+
+# 性能调优参数（可选）
+# 以下参数通常使用默认值即可，仅在特殊场景下调整
+
+# 并发控制
+# max_concurrent_writes: 1000  # 最大并发写入数
+# max_concurrent_reads: 10000  # 最大并发读取数
+
+# 索引配置
+# index_rebuild_interval: 86400000000000  # 索引重建间隔（24 小时）
+
+# 监控和统计
+# metrics_interval: 30000000000  # 指标收集间隔（30 秒）
+
+# 日志配置
+# log_level: info          # 日志级别：debug/info/warn/error
+# log_format: json         # 日志格式：json/text
