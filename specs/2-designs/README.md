@@ -1,1 +1,1 @@
-# 2-designs - 设计文档（D系列）
+# 2-designs - 设计文档（DN系列）

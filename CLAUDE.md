@@ -37,20 +37,29 @@ specs/
 │   ├── conventions.md  # 编码与命名约定（Go 语言规范）
 │   ├── glossary.md     # 术语词汇表
 │   └── interactive-workflow.md  # AI 交互式工作流定义
-├── 0-captures/         # CP 系列 - 想法捕捉（编号：CP-<yyWW><seq>）
-├── 1-requirements/     # R 系列 - 需求文档（功能/非功能/基础设施需求）
-├── 2-designs/          # D 系列 - 技术设计文档
+├── 0-captures/         # CP 系列 - 想法捕捉
+├── 1-requirements/     # RQ 系列 - 需求文档（功能/非功能/基础设施需求）
+├── 2-designs/          # DN 系列 - 技术设计文档
 ├── 3-tasks/            # TK 系列 - 开发任务分解
-└── adrs/               # ADR 系列 - 架构决策记录
+└── adrs/               # AD 系列 - 架构决策记录
 ```
 
 ### 文档编号规则
 
-- **CP-<yyWW><seq>**: 想法捕捉（Capture），例如 CP-2550A
-- **R001, R002**: 需求文档（Requirements）
-- **D001, D002**: 设计文档（Designs）
-- **TK001, TK002**: 任务文档（Tasks）
-- **ADR-001**: 架构决策记录（Architecture Decision Records）
+所有文档采用统一编号格式：**{TYPE}-{yyWW}{seq}-{标题}.md**
+
+- **TYPE**：文档类型（2 字母，如 CP/RQ/DN/TK/AD）
+- **yy**：年份后两位（如 2025 → 25）
+- **WW**：ISO 周数（01-53，周一为一周第一天）
+- **seq**：两位数顺序号（01-99）
+- **标题**：文档核心内容抽取
+
+**文档系列**：
+- **CP-{yyWW}{seq}-{标题}.md**: 想法捕捉（Capture），例如 CP-254901-核心定位架构目标.md
+- **RQ-{yyWW}{seq}-{标题}.md**: 需求文档（Requirements），例如 RQ-254901-会话令牌存储引擎.md
+- **DN-{yyWW}{seq}-{标题}.md**: 设计文档（Design），例如 DN-254901-存储引擎架构设计.md
+- **TK-{yyWW}{seq}-{标题}.md**: 任务文档（Tasks），例如 TK-254901-实现内存存储引擎.md
+- **AD-{yyWW}{seq}-{标题}.md**: 架构决策记录（Architecture Decision），例如 AD-254901-选择单写多读模型.md
 
 ## 工作流触发指令
 
