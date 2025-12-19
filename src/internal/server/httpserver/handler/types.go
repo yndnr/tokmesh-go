@@ -71,6 +71,13 @@ type RenewSessionResponse struct {
 	NewExpiresAt time.Time `json:"new_expires_at"`
 }
 
+// TouchSessionResponse is the response body for POST /sessions/{id}/touch.
+//
+// @design DS-0301
+type TouchSessionResponse struct {
+	LastActive time.Time `json:"last_active"`
+}
+
 // ValidateTokenRequest is the request body for POST /tokens/validate.
 //
 // @design DS-0301

@@ -342,6 +342,75 @@ func (s *SessionService) Renew(ctx context.Context, req *RenewSessionRequest) (*
 	}, nil
 }
 
+// TouchSessionRequest contains parameters for session touch operation.
+//
+// @design DS-0103
+type TouchSessionRequest struct {
+	SessionID string
+	ClientIP  string // Optional: update last access IP
+}
+
+// TouchSessionResponse contains the result of session touch.
+//
+// @design DS-0103
+type TouchSessionResponse struct {
+	LastActive int64 // Updated last_active timestamp in milliseconds
+}
+
+// Touch updates the last_active timestamp of a session.
+// This is a lightweight operation that doesn't extend the session TTL.
+//
+// @req RQ-0102
+// @design DS-0103
+func (s *SessionService) Touch(ctx context.Context, req *TouchSessionRequest) (*TouchSessionResponse, error) {
+	// 1. Validate input
+	if req.SessionID == "" {
+		return nil, domain.ErrMissingArgument.WithDetails("session_id is required")
+	}
+
+	// 2. Get current session
+	session, err := s.repo.Get(ctx, req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Check if session is still valid
+	if session.IsExpired() {
+		return nil, domain.ErrSessionExpired.WithDetails(fmt.Sprintf("session %s has expired", req.SessionID))
+	}
+
+	// 4. Update last_active and optionally last_access_ip
+	now := time.Now().UnixMilli()
+	session.LastActive = now
+	if req.ClientIP != "" {
+		session.LastAccessIP = req.ClientIP
+	}
+
+	// 5. Save to storage (with optimistic locking)
+	if err := s.repo.Update(ctx, session, session.Version); err != nil {
+		if domain.IsDomainError(err, "TM-SESS-4091") {
+			// Version conflict - retry once with fresh data
+			session, err = s.repo.Get(ctx, req.SessionID)
+			if err != nil {
+				return nil, err
+			}
+			session.LastActive = now
+			if req.ClientIP != "" {
+				session.LastAccessIP = req.ClientIP
+			}
+			if err := s.repo.Update(ctx, session, session.Version); err != nil {
+				return nil, domain.ErrStorageError.WithCause(err)
+			}
+		} else {
+			return nil, domain.ErrStorageError.WithCause(err)
+		}
+	}
+
+	return &TouchSessionResponse{
+		LastActive: session.LastActive,
+	}, nil
+}
+
 // RevokeSessionRequest contains parameters for session revocation.
 //
 // @design DS-0103

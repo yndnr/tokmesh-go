@@ -107,6 +107,31 @@ func (h *Handler) handleRenewSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleTouchSession handles POST /sessions/{id}/touch.
+//
+// @design DS-0301
+func (h *Handler) handleTouchSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		h.writeError(w, r, http.StatusBadRequest, "TM-ARG-1002", "session_id is required", nil)
+		return
+	}
+
+	// Call service
+	resp, err := h.sessionSvc.Touch(r.Context(), &service.TouchSessionRequest{
+		SessionID: sessionID,
+		ClientIP:  getClientIP(r),
+	})
+	if err != nil {
+		h.handleServiceError(w, r, err)
+		return
+	}
+
+	h.writeJSON(w, r, http.StatusOK, TouchSessionResponse{
+		LastActive: time.UnixMilli(resp.LastActive),
+	})
+}
+
 // handleRevokeSession handles POST /sessions/{id}/revoke.
 //
 // @design DS-0301

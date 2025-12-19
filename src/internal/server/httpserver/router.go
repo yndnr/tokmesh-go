@@ -121,6 +121,7 @@ func NewRouter(cfg *RouterConfig) http.Handler {
 	mux.Handle("GET /sessions", businessHandler)
 	mux.Handle("POST /sessions", businessHandler)
 	mux.Handle("GET /sessions/{id}", businessHandler)
+	mux.Handle("POST /sessions/{id}/touch", businessHandler)
 	mux.Handle("POST /sessions/{id}/renew", businessHandler)
 	mux.Handle("POST /sessions/{id}/revoke", businessHandler)
 

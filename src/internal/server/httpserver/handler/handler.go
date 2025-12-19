@@ -59,6 +59,7 @@ func (h *Handler) registerRoutes() {
 	h.mux.HandleFunc("GET /sessions", h.handleListSessions)
 	h.mux.HandleFunc("POST /sessions", h.handleCreateSession)
 	h.mux.HandleFunc("GET /sessions/{id}", h.handleGetSession)
+	h.mux.HandleFunc("POST /sessions/{id}/touch", h.handleTouchSession)
 	h.mux.HandleFunc("POST /sessions/{id}/renew", h.handleRenewSession)
 	h.mux.HandleFunc("POST /sessions/{id}/revoke", h.handleRevokeSession)
 

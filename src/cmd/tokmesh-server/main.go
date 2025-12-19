@@ -22,6 +22,7 @@ import (
 	"github.com/yndnr/tokmesh-go/internal/server/config"
 	"github.com/yndnr/tokmesh-go/internal/server/httpserver"
 	"github.com/yndnr/tokmesh-go/internal/server/httpserver/handler"
+	"github.com/yndnr/tokmesh-go/internal/server/redisserver"
 	"github.com/yndnr/tokmesh-go/internal/storage"
 	"github.com/yndnr/tokmesh-go/internal/storage/memory"
 	"github.com/yndnr/tokmesh-go/internal/telemetry/logger"
@@ -96,10 +97,27 @@ func run() error {
 	// Create HTTP server
 	httpServer := httpserver.New(cfg.Server.HTTP.Addr, httpHandler)
 
+	// Create Redis server if enabled
+	var redisServer *redisserver.Server
+	if cfg.Server.Redis.Enabled {
+		redisCfg := &redisserver.Config{
+			PlainEnabled: true,
+			PlainAddress: cfg.Server.Redis.Addr,
+		}
+		redisServer = redisserver.New(redisCfg, services.Session, services.Token, services.Auth, slogLogger)
+	}
+
 	// Setup graceful shutdown
 	shutdownHandler := shutdown.NewHandler(30 * time.Second)
 
 	// Register shutdown hooks (reverse order of startup)
+	if redisServer != nil {
+		shutdownHandler.OnShutdown(func(ctx context.Context) error {
+			log.Info("shutting down Redis server")
+			return redisServer.Shutdown(ctx)
+		})
+	}
+
 	shutdownHandler.OnShutdown(func(ctx context.Context) error {
 		log.Info("shutting down HTTP server")
 		return httpServer.Shutdown(ctx)
@@ -109,6 +127,14 @@ func run() error {
 		log.Info("shutting down storage engine")
 		return storageEngine.Close()
 	})
+
+	// Start Redis server if enabled
+	if redisServer != nil {
+		if err := redisServer.Start(ctx); err != nil {
+			return fmt.Errorf("start redis server: %w", err)
+		}
+		log.Info("Redis server listening", "addr", cfg.Server.Redis.Addr)
+	}
 
 	// Start HTTP server in goroutine
 	go func() {
