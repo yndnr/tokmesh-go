@@ -33,6 +33,10 @@ go.work.sum
 # Claude Code local settings
 .claude/settings.local.json
 
+# AI agent config files (local only)
+CLAUDE.md
+GEMINI.md
+
 # OS
 .DS_Store
 
