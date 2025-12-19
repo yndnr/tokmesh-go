@@ -89,11 +89,26 @@
 - **返回**: (Bulk String) JSON 字符串，包含生成的 `token`。
     - 示例: `{ "session_id": "tmss-123", "token": "tmtk_xxx..." }`
 
-#### TM.VALIDATE <token>
+#### TM.VALIDATE <token> [TOUCH]
 - **用途**: 校验令牌有效性。
+- **参数**:
+    - `<token>`: 待校验的令牌 (必填)。
+    - `TOUCH`: 可选，若指定则同时更新 `last_active` 时间戳。
 - **返回**:
     - 有效: `+OK`
     - 无效: `-ERR TM-TOKN-4010 Token invalid`
+
+#### TM.TOUCH <session_id>
+- **用途**: 更新会话的 `last_active` 时间戳，但不延长 TTL。
+- **参数**:
+    - `<session_id>`: Session ID (必填)。
+- **返回**:
+    - 成功: (Integer) 更新后的 `last_active` 时间戳 (Unix 毫秒)。
+    - 会话不存在: `-ERR TM-SESS-4040 Session not found`
+    - 会话已过期: `-ERR TM-SESS-4041 Session expired`
+- **场景**:
+    - 追踪用户活跃度，而不自动续期会话。
+    - 与 `TM.VALIDATE ... TOUCH` 的区别：本命令按 session_id 操作，无需 token。
 
 #### TM.REVOKE_USER <user_id>
 - **用途**: 按用户 ID 批量吊销。
@@ -107,7 +122,7 @@
 2.  **AUTH**: 必须使用 `AUTH <api_key>` 进行鉴权。
     - **主口径（推荐）**: `AUTH <key_id> <key_secret>`（两参数）。
     - **兼容口径**: `AUTH <key_id>:<key_secret>`（单参数，与 HTTP Header 复用同一凭证字符串）。
-    - `TM.VALIDATE`：需要 `role=validator`（或 `role=issuer`/`role=admin`）
+    - `TM.VALIDATE` / `TM.TOUCH`：需要 `role=validator`（或 `role=issuer`/`role=admin`）
     - `TM.CREATE` / `TM.REVOKE_USER` / 写操作：需要 `role=issuer`（或 `role=admin`）
 
 ## 5. 验收标准 (Acceptance Criteria)

@@ -177,6 +177,8 @@ func (h *CommandHandler) Handle(conn *Conn, args [][]byte) {
 		h.handleTMCreate(conn, args)
 	case "TM.VALIDATE":
 		h.handleTMValidate(conn, args)
+	case "TM.TOUCH":
+		h.handleTMTouch(conn, args)
 	case "TM.REVOKE_USER":
 		h.handleTMRevokeUser(conn, args)
 	default:
@@ -195,7 +197,7 @@ func (h *CommandHandler) checkPermission(state *ConnState, cmdName string) bool 
 	}
 
 	switch cmdName {
-	case "GET", "TTL", "EXISTS", "SCAN", "TM.VALIDATE":
+	case "GET", "TTL", "EXISTS", "SCAN", "TM.VALIDATE", "TM.TOUCH":
 		return role == "validator" || role == "issuer"
 	case "SET", "DEL", "EXPIRE", "TM.CREATE", "TM.REVOKE_USER":
 		return role == "issuer"
@@ -689,23 +691,94 @@ func (h *CommandHandler) handleTMCreate(conn *Conn, args [][]byte) {
 	_ = WriteBulk(conn.bw, data)
 }
 
-// TM.VALIDATE <token>
+// TM.VALIDATE <token> [TOUCH]
+//
+// Validates a token and optionally updates the session's last_active timestamp.
+// Returns:
+//   - "OK" if the token is valid
+//   - Error if the token is invalid or expired
+//
+// When TOUCH is specified, the session's last_active timestamp is updated.
+//
+// @design DS-0301
 func (h *CommandHandler) handleTMValidate(conn *Conn, args [][]byte) {
-	if len(args) != 2 {
+	if len(args) < 2 || len(args) > 3 {
 		_ = WriteError(conn.bw, "ERR wrong number of arguments for 'TM.VALIDATE' command")
 		return
 	}
 
 	token := string(args[1])
+
+	// Check for TOUCH option
+	touch := false
+	if len(args) == 3 {
+		opt := strings.ToUpper(string(args[2]))
+		if opt == "TOUCH" {
+			touch = true
+		} else {
+			_ = WriteError(conn.bw, "ERR syntax error, expected 'TOUCH' option")
+			return
+		}
+	}
+
 	ctx := context.Background()
 
-	resp, err := h.tokenSvc.Validate(ctx, &service.ValidateTokenRequest{Token: token})
+	// Extract client IP from connection
+	clientIP := conn.RemoteAddr().String()
+	if idx := strings.LastIndex(clientIP, ":"); idx != -1 {
+		clientIP = clientIP[:idx]
+	}
+
+	resp, err := h.tokenSvc.Validate(ctx, &service.ValidateTokenRequest{
+		Token:    token,
+		Touch:    touch,
+		ClientIP: clientIP,
+	})
 	if err != nil || !resp.Valid {
 		_ = WriteError(conn.bw, "ERR TM-TOKN-4010 Token invalid")
 		return
 	}
 
 	_ = WriteSimpleString(conn.bw, "OK")
+}
+
+// TM.TOUCH <session_id>
+//
+// Updates the last_active timestamp of a session without extending the TTL.
+// Returns:
+//   - The updated last_active timestamp (Unix milliseconds) on success
+//   - Error if the session does not exist or is expired
+//
+// @design DS-0301
+func (h *CommandHandler) handleTMTouch(conn *Conn, args [][]byte) {
+	if len(args) != 2 {
+		_ = WriteError(conn.bw, "ERR wrong number of arguments for 'TM.TOUCH' command")
+		return
+	}
+
+	sessionID := string(args[1])
+	ctx := context.Background()
+
+	// Extract client IP from connection
+	clientIP := conn.RemoteAddr().String()
+	if idx := strings.LastIndex(clientIP, ":"); idx != -1 {
+		clientIP = clientIP[:idx]
+	}
+
+	resp, err := h.sessionSvc.Touch(ctx, &service.TouchSessionRequest{
+		SessionID: sessionID,
+		ClientIP:  clientIP,
+	})
+	if err != nil {
+		if domain.IsDomainError(err, "TM-SESS-4040") || domain.IsDomainError(err, "TM-SESS-4041") {
+			_ = WriteError(conn.bw, "ERR TM-SESS-4040 Session not found")
+			return
+		}
+		_ = WriteError(conn.bw, formatRedisError(err))
+		return
+	}
+
+	_ = WriteInteger(conn.bw, resp.LastActive)
 }
 
 // TM.REVOKE_USER <user_id>

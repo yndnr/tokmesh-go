@@ -1079,6 +1079,20 @@ func TestCommandHandler_TMValidate_WrongArgs(t *testing.T) {
 	}
 }
 
+func TestCommandHandler_TMValidate_TooManyArgs(t *testing.T) {
+	h, _ := newTestCommandHandler()
+	tc := newTestConn()
+	defer tc.Close()
+
+	args := [][]byte{[]byte("TM.VALIDATE"), []byte("token"), []byte("TOUCH"), []byte("extra")}
+	h.handleTMValidate(tc.Conn, args)
+
+	output := tc.FlushAndGetOutput()
+	if !strings.Contains(output, "wrong number of arguments") {
+		t.Errorf("expected wrong arguments error, got %q", output)
+	}
+}
+
 func TestCommandHandler_TMValidate_InvalidToken(t *testing.T) {
 	h, _ := newTestCommandHandler()
 	tc := newTestConn()
@@ -1091,6 +1105,243 @@ func TestCommandHandler_TMValidate_InvalidToken(t *testing.T) {
 	// TM.VALIDATE returns error for invalid token
 	if !strings.Contains(output, "TM-TOKN-4010") {
 		t.Errorf("TM.VALIDATE invalid token response = %q, want error with TM-TOKN-4010", output)
+	}
+}
+
+func TestCommandHandler_TMValidate_InvalidOption(t *testing.T) {
+	h, _ := newTestCommandHandler()
+	tc := newTestConn()
+	defer tc.Close()
+
+	args := [][]byte{[]byte("TM.VALIDATE"), []byte("tmtk_valid"), []byte("INVALID")}
+	h.handleTMValidate(tc.Conn, args)
+
+	output := tc.FlushAndGetOutput()
+	if !strings.Contains(output, "syntax error") {
+		t.Errorf("expected syntax error for invalid option, got %q", output)
+	}
+}
+
+func TestCommandHandler_TMValidate_WithTouch(t *testing.T) {
+	// Create handler with a valid session and token
+	sessionRepo := newMockSessionRepo()
+	tokenRepo := newMockTokenRepo()
+	apiKeyRepo := newMockAPIKeyRepo()
+
+	// Create a valid token and session
+	tokenSvc := service.NewTokenService(tokenRepo, nil)
+	plainToken, tokenHash, _ := tokenSvc.GenerateToken()
+
+	session := &domain.Session{
+		ID:         "tmss-test-validate-touch1",
+		UserID:     "user123",
+		TokenHash:  tokenHash,
+		CreatedAt:  time.Now().UnixMilli(),
+		LastActive: time.Now().Add(-time.Hour).UnixMilli(), // 1 hour ago
+		ExpiresAt:  time.Now().Add(time.Hour).UnixMilli(),
+		Version:    1,
+	}
+	ctx := context.Background()
+	sessionRepo.Create(ctx, session)
+	tokenRepo.sessions[tokenHash] = session
+
+	sessionSvc := service.NewSessionService(sessionRepo, tokenSvc)
+	authSvc := service.NewAuthService(apiKeyRepo, nil)
+
+	h := NewCommandHandler(sessionSvc, tokenSvc, authSvc, nil, nil)
+	tc := newTestConn()
+	defer tc.Close()
+
+	// Validate with TOUCH option
+	args := [][]byte{[]byte("TM.VALIDATE"), []byte(plainToken), []byte("TOUCH")}
+	h.handleTMValidate(tc.Conn, args)
+
+	output := tc.FlushAndGetOutput()
+	if output != "+OK\r\n" {
+		t.Errorf("TM.VALIDATE with TOUCH response = %q, want +OK\\r\\n", output)
+	}
+}
+
+func TestCommandHandler_TMValidate_TouchCaseInsensitive(t *testing.T) {
+	// Create handler with a valid session and token
+	sessionRepo := newMockSessionRepo()
+	tokenRepo := newMockTokenRepo()
+	apiKeyRepo := newMockAPIKeyRepo()
+
+	tokenSvc := service.NewTokenService(tokenRepo, nil)
+	plainToken, tokenHash, _ := tokenSvc.GenerateToken()
+
+	session := &domain.Session{
+		ID:         "tmss-test-validate-touch2",
+		UserID:     "user123",
+		TokenHash:  tokenHash,
+		CreatedAt:  time.Now().UnixMilli(),
+		LastActive: time.Now().UnixMilli(),
+		ExpiresAt:  time.Now().Add(time.Hour).UnixMilli(),
+		Version:    1,
+	}
+	ctx := context.Background()
+	sessionRepo.Create(ctx, session)
+	tokenRepo.sessions[tokenHash] = session
+
+	sessionSvc := service.NewSessionService(sessionRepo, tokenSvc)
+	authSvc := service.NewAuthService(apiKeyRepo, nil)
+
+	h := NewCommandHandler(sessionSvc, tokenSvc, authSvc, nil, nil)
+	tc := newTestConn()
+	defer tc.Close()
+
+	// Test lowercase 'touch'
+	args := [][]byte{[]byte("TM.VALIDATE"), []byte(plainToken), []byte("touch")}
+	h.handleTMValidate(tc.Conn, args)
+
+	output := tc.FlushAndGetOutput()
+	if output != "+OK\r\n" {
+		t.Errorf("TM.VALIDATE with lowercase touch response = %q, want +OK\\r\\n", output)
+	}
+}
+
+// ============================================================
+// Test: TM.TOUCH command
+// ============================================================
+
+func TestCommandHandler_TMTouch_WrongArgs(t *testing.T) {
+	h, _ := newTestCommandHandler()
+	tc := newTestConn()
+	defer tc.Close()
+
+	args := [][]byte{[]byte("TM.TOUCH")}
+	h.handleTMTouch(tc.Conn, args)
+
+	output := tc.FlushAndGetOutput()
+	if !strings.Contains(output, "wrong number of arguments") {
+		t.Errorf("expected wrong arguments error, got %q", output)
+	}
+}
+
+func TestCommandHandler_TMTouch_TooManyArgs(t *testing.T) {
+	h, _ := newTestCommandHandler()
+	tc := newTestConn()
+	defer tc.Close()
+
+	args := [][]byte{[]byte("TM.TOUCH"), []byte("session-id"), []byte("extra")}
+	h.handleTMTouch(tc.Conn, args)
+
+	output := tc.FlushAndGetOutput()
+	if !strings.Contains(output, "wrong number of arguments") {
+		t.Errorf("expected wrong arguments error, got %q", output)
+	}
+}
+
+func TestCommandHandler_TMTouch_NotFound(t *testing.T) {
+	h, _ := newTestCommandHandler()
+	tc := newTestConn()
+	defer tc.Close()
+
+	args := [][]byte{[]byte("TM.TOUCH"), []byte("non-existent-session")}
+	h.handleTMTouch(tc.Conn, args)
+
+	output := tc.FlushAndGetOutput()
+	if !strings.Contains(output, "TM-SESS-4040") {
+		t.Errorf("expected session not found error, got %q", output)
+	}
+}
+
+func TestCommandHandler_TMTouch_Success(t *testing.T) {
+	h, _ := newTestCommandHandlerWithSession()
+	tc := newTestConn()
+	defer tc.Close()
+
+	// Record the current time before touch
+	beforeTouch := time.Now().UnixMilli()
+
+	args := [][]byte{[]byte("TM.TOUCH"), []byte("tmss-test-session-id")}
+	h.handleTMTouch(tc.Conn, args)
+
+	output := tc.FlushAndGetOutput()
+	// Should return integer (last_active timestamp in milliseconds)
+	if !strings.HasPrefix(output, ":") {
+		t.Errorf("TM.TOUCH should return integer, got %q", output)
+	}
+
+	// Parse the returned timestamp
+	var timestamp int64
+	_, err := fmt.Sscanf(output, ":%d\r\n", &timestamp)
+	if err != nil {
+		t.Fatalf("failed to parse timestamp from output %q: %v", output, err)
+	}
+
+	// Verify timestamp is recent (within last second)
+	if timestamp < beforeTouch {
+		t.Errorf("TM.TOUCH timestamp %d should be >= %d", timestamp, beforeTouch)
+	}
+	if timestamp > time.Now().UnixMilli()+1000 {
+		t.Errorf("TM.TOUCH timestamp %d should not be in the future", timestamp)
+	}
+}
+
+func TestCommandHandler_TMTouch_ExpiredSession(t *testing.T) {
+	sessionRepo := newMockSessionRepo()
+	tokenRepo := newMockTokenRepo()
+	apiKeyRepo := newMockAPIKeyRepo()
+
+	// Create an expired session
+	ctx := context.Background()
+	session := &domain.Session{
+		ID:         "tmss-expired-session123",
+		UserID:     "user123",
+		TokenHash:  "test-token-hash",
+		CreatedAt:  time.Now().Add(-2 * time.Hour).UnixMilli(),
+		LastActive: time.Now().Add(-2 * time.Hour).UnixMilli(),
+		ExpiresAt:  time.Now().Add(-1 * time.Hour).UnixMilli(), // Expired 1 hour ago
+		Version:    1,
+	}
+	sessionRepo.Create(ctx, session)
+
+	tokenSvc := service.NewTokenService(tokenRepo, nil)
+	sessionSvc := service.NewSessionService(sessionRepo, tokenSvc)
+	authSvc := service.NewAuthService(apiKeyRepo, nil)
+
+	h := NewCommandHandler(sessionSvc, tokenSvc, authSvc, nil, nil)
+	tc := newTestConn()
+	defer tc.Close()
+
+	args := [][]byte{[]byte("TM.TOUCH"), []byte("tmss-expired-session123")}
+	h.handleTMTouch(tc.Conn, args)
+
+	output := tc.FlushAndGetOutput()
+	// Should return error for expired session
+	if !strings.Contains(output, "ERR") {
+		t.Errorf("TM.TOUCH on expired session should return error, got %q", output)
+	}
+}
+
+func TestCommandHandler_TMTouch_Permission(t *testing.T) {
+	h, _ := newTestCommandHandlerWithSession()
+	tc := newTestConn()
+	defer tc.Close()
+
+	// Set as validator role (should be allowed for TM.TOUCH)
+	tc.SetState(ConnState{
+		Authenticated: true,
+		APIKey: &service.APIKeyInfo{
+			KeyID:   "test-key-id",
+			Role:    string(domain.RoleValidator),
+			Enabled: true,
+		},
+	})
+
+	// TM.TOUCH should be allowed for validator role
+	args := [][]byte{[]byte("TM.TOUCH"), []byte("tmss-test-session-id")}
+	h.Handle(tc.Conn, args)
+
+	output := tc.FlushAndGetOutput()
+	// Should return integer (success), not permission denied
+	if strings.Contains(output, "permission denied") {
+		t.Errorf("TM.TOUCH should be allowed for validator role, got %q", output)
+	}
+	if !strings.HasPrefix(output, ":") {
+		t.Errorf("TM.TOUCH should return integer on success, got %q", output)
 	}
 }
 
