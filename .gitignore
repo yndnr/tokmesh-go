@@ -37,6 +37,9 @@ go.work.sum
 CLAUDE.md
 GEMINI.md
 
+# Patents (local only)
+patents/
+
 # OS
 .DS_Store
 
