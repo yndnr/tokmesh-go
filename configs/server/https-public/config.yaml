@@ -1,0 +1,90 @@
+# TokMesh Server - HTTPS 对外示例（演示用途）
+#
+# 说明：配置中的相对路径（如 `./certs/...`、`./data/...`）按本 `config.yaml` 所在目录解析（不是进程工作目录）。
+#
+# !!! 安全警示（必须显式确认） !!!
+# - 本配置会让 HTTPS 监听 `0.0.0.0:5443`，即对外暴露服务。
+# - 你必须自行落实：防火墙/安全组限制来源、强 API Key 管理、证书与私钥权限最小化。
+# - 对外调用必须按最小权限分配 API Key：业务侧用 `issuer/validator`，监控抓取用 `metrics`；避免用 `admin` 承载高频业务请求。
+# - `certs/` 下示例证书仅用于开发/演示，严禁用于生产。
+#
+# - 明文 HTTP：仍仅回环（便于本机运维/调试；如不需要可关闭 `server.http.enabled`）
+# - HTTPS：显式开启并监听 0.0.0.0:5443（对外暴露）
+
+server:
+  http:
+    enabled: true
+    # 安全提示：默认仅回环。若将 address 改为 0.0.0.0/:: 将对外暴露明文端口（不推荐）。
+    address: "127.0.0.1:5080"
+
+  https:
+    enabled: true
+    # 安全提示：本配置显式对外监听 0.0.0.0:5443。请确认已配置防火墙、证书、API Key 与审计策略。
+    address: "0.0.0.0:5443"
+    tls:
+      cert_file: "./certs/server.crt"
+      # 重要：仓库不会提供任何私钥文件（避免泄露）。
+      # 使用前请先按 `configs/server/https-public/certs/README.md` 在本机生成 `./certs/server.key`：
+      #   cd configs/server/https-public/certs && sh ./generate-dev-certs.sh gen-ca tokmesh-dev-ca
+      #   sh ./generate-dev-certs.sh gen-server tokmesh-server "DNS:localhost,IP:127.0.0.1" ..
+      key_file: "./certs/server.key"
+      client_ca_file: ""
+      # 注意：server.crt 的 SAN 必须包含客户端访问使用的域名/IP（否则证书校验失败）。
+      # 生成示例：sh ./certs/generate-dev-certs.sh gen-server tokmesh-server "DNS:example.com,IP:203.0.113.10" ./certs
+
+  redis:
+    enabled: false
+    address: "127.0.0.1:6379"
+
+  redis_tls:
+    enabled: false
+    address: "127.0.0.1:6380"
+    tls:
+      cert_file: ""
+      key_file: ""
+      client_ca_file: ""
+
+cluster:
+  enabled: false
+  # 说明：此段为"集群骨架"。启用集群必须显式配置 listen/advertise/tls（否则启动期校验失败）。
+  # node_id 建议留空由服务端自动生成并持久化（便于分发统一配置）。
+  node_id: ""
+  listen_address: ""        # 例如 "10.0.0.10:5343"
+  advertise_address: ""     # 例如 "10.0.0.10:5343"（必须为其他节点可访问的本机地址）
+  tls:
+    cert_file: ""        # 例如 "./certs/node.crt"
+    key_file: ""         # 例如 "./certs/node.key"（私钥不入库，需本机生成/下发）
+    client_ca_file: ""   # 例如 "./certs/ca.crt"（集群内统一 CA）
+  discovery:
+    seeds: []
+
+telemetry:
+  metrics:
+    # 若开启鉴权：Prometheus 抓取 /metrics 时必须提供 `role=metrics` 或 `role=admin` 的 API Key。
+    # 推荐（Prometheus 兼容）：Authorization: Bearer <api_key>
+    # 兼容（CLI/调试）：X-API-Key: <api_key>
+    auth_enabled: true
+  logging:
+    level: "info"
+    dump_config: false
+  tracing:
+    enabled: false
+    endpoint: ""
+    sampling_ratio: 0.01
+
+security:
+  auth:
+    # allow_list（可选，默认不启用）：
+    # - 用于限制"哪些来源 IP 允许使用 API Key 访问 TokMesh"（IP/CIDR 列表）。
+    # - 留空（[]）= 不限制；非空 = 仅允许列表内来源。
+    # - 组合规则：若某个 API Key 自身也配置了 allow_list，则与本全局 allow_list 取交集（必须都命中才允许）。
+    # - 集群提示：若集群每个节点都对外提供 API，建议所有节点使用一致的 allow_list（避免负载均衡下行为不一致）。
+    # - 支持：CIDR（如 "10.0.0.0/8"、"2001:db8::/64"），或单个 IP（如 "192.168.1.10"、"2001:db8::1"；等价于 /32 或 /128）。
+    # - 反向代理/Ingress/NAT 场景：当前版本不读取/不信任 X-Forwarded-For / X-Real-IP，因此不要依赖本项；请在网关/安全组侧实现来源 IP 限制。
+    allow_list: []
+    # 示例（注释）：
+    # allow_list:
+    #   - "10.0.0.0/8"
+    #   - "192.168.1.10"
+    #   - "192.168.1.0/24"
+    #   - "2001:db8::/64"

@@ -1,0 +1,15 @@
+# TokMesh CLI - Windows 本地紧急通道（Named Pipe）
+# - 连接 `tokmesh-server` 暴露的本地 Named Pipe
+# - 无需 API Key（权限由 Windows ACL 控制）
+
+default: local
+
+targets:
+  local:
+    socket: "\\\\.\\pipe\\tokmesh-server"
+
+defaults:
+  output: table
+  timeout: 30s
+  no_color: false
+

@@ -1,0 +1,61 @@
+// Package v1 defines the cluster RPC protocol for TokMesh.
+//
+// This protocol is used for internal cluster communication only,
+// using Connect + Protobuf over mTLS.
+
+syntax = "proto3";
+
+package tokmesh.cluster.v1;
+
+option go_package = "github.com/yndnr/tokmesh-go/api/proto/v1;clusterv1";
+
+// ClusterService defines the internal cluster control-plane RPC.
+//
+// This service MUST NOT be exposed externally.
+service ClusterService {
+  // Join adds the node to the cluster.
+  rpc Join(JoinRequest) returns (JoinResponse);
+
+  // GetShardMap returns the current shard map snapshot.
+  rpc GetShardMap(GetShardMapRequest) returns (GetShardMapResponse);
+
+  // TransferShard streams shard migration data (rebalance).
+  rpc TransferShard(stream TransferShardRequest) returns (TransferShardResponse);
+}
+
+message JoinRequest {
+  // NodeId is the unique node identifier.
+  string node_id = 1;
+
+  // AdvertiseAddress is the node endpoint reachable by peers (ip:port).
+  string advertise_address = 2;
+
+  // ClusterId is used to prevent accidental cross-cluster joins.
+  string cluster_id = 3;
+}
+
+message JoinResponse {
+  bool accepted = 1;
+  string leader_node_id = 2;
+}
+
+message GetShardMapRequest {
+  string node_id = 1;
+}
+
+message GetShardMapResponse {
+  // TODO: Replace with a strongly-typed shard map schema.
+  bytes shard_map = 1;
+  uint64 version = 2;
+}
+
+message TransferShardRequest {
+  // TODO: Define the shard transfer protocol and data model.
+  uint32 shard_id = 1;
+  bytes payload = 2;
+}
+
+message TransferShardResponse {
+  bool success = 1;
+  uint64 transferred_items = 2;
+}

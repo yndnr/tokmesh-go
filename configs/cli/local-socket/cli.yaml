@@ -1,0 +1,14 @@
+# TokMesh CLI - 本地紧急通道（UDS / Named Pipe）
+# - 连接 `tokmesh-server` 暴露的本地 socket
+# - 无需 API Key（权限由 OS ACL/文件权限控制）
+
+default: local
+
+targets:
+  local:
+    socket: /var/run/tokmesh-server/tokmesh-server.sock
+
+defaults:
+  output: table
+  timeout: 30s
+  no_color: false

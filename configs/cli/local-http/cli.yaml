@@ -1,0 +1,15 @@
+# TokMesh CLI - 本地回环 HTTP（仍需要 API Key）
+# 说明：`http://127.0.0.1:*` 仍被视为网络接口，必须提供 API Key（见 RQ-0602）。
+
+default: local
+
+targets:
+  local:
+    url: http://127.0.0.1:5080
+    # 注意：即使是 127.0.0.1 回环 HTTP，也必须提供 API Key（可通过 -k/交互输入）。
+    # api_key: "<key_id>:<key_secret>"  # 仅开发环境可选；生产环境禁止明文存储
+
+defaults:
+  output: table
+  timeout: 30s
+  no_color: false

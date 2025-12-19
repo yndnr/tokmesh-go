@@ -1,0 +1,100 @@
+# TokMesh Server - 集群配置示例（较完整）
+#
+# 说明：配置中的相对路径（如 `./certs/...`、`./data/...`）按本 `config.yaml` 所在目录解析（不是进程工作目录）。
+#
+# !!! 安全警示（必须显式确认） !!!
+# - 集群端口（默认 5343）仅允许集群内网访问，严禁暴露公网。
+# - 启用集群必须启用 mTLS（节点证书 + CA），并将 listen/advertise 显式配置为内网地址。
+#
+# 说明：本文件在 cluster-minimal 基础上补充更多 cluster 参数示例；请按实际环境调整。
+
+server:
+  http:
+    enabled: true
+    address: "127.0.0.1:5080"
+  https:
+    enabled: false
+    address: "127.0.0.1:5443"
+    tls:
+      cert_file: ""
+      key_file: ""
+      client_ca_file: ""
+
+cluster:
+  enabled: true
+  # node_id：建议留空由服务端自动生成并持久化（便于分发统一配置）；如需人工指定，可显式填写。
+  # node_id: "node-1"
+  # listen_address：本机监听地址（本机 bind）。必须是内网地址，且必须能被本机绑定成功。
+  listen_address: "10.0.0.10:5343"
+  # advertise_address：对外宣告地址（给其他节点连接用）。必须是"其他节点可访问"的本机地址。
+  # 误用提示：多网卡/容器环境下填错地址，会导致节点互连失败且很难排障。
+  advertise_address: "10.0.0.10:5343"
+  tls:
+    cert_file: "./certs/node.crt"
+    key_file: "./certs/node.key"
+    client_ca_file: "./certs/ca.crt"
+    # 注意：node.crt 的 SAN 必须包含 listen_address/advertise_address 的 IP 或 DNS。
+    # 生成示例：sh ./certs/generate-dev-certs.sh gen-node tokmesh-node-1 "DNS:tokmesh-node-1,IP:10.0.0.10" ./certs
+  discovery:
+    # seeds 留空 vs 填写的区别：
+    # - 留空（[]）：不做节点发现；仅适合单机/单节点集群测试（通常 expect_nodes=1）。
+    # - 非空：用于加入/引导集群。建议至少包含 1 个"已存在节点"的地址；也可包含本机地址。
+    seeds:
+      - "10.0.0.10:5343"
+      - "10.0.0.11:5343"
+      - "10.0.0.12:5343"
+  bootstrap:
+    # expect_nodes：仅在"初始化全新集群"阶段生效；加入既有集群时通常不依赖该值。
+    expect_nodes: 3
+  data:
+    # replication_factor：副本数。不要大于节点数；3 节点小集群常用 2；单节点只能为 1。
+    replication_factor: 2
+  raft:
+    # 高级项：默认不要改（不确定就保持默认）。
+    # - snapshot_threshold：越小越频繁做快照（恢复更快但写放大可能更高）；越大则 WAL 更长（恢复更慢、磁盘更大）。
+    # - trailing_logs：快照后保留多少日志用于追赶；太小可能增加追赶成本，太大增加磁盘占用。
+    snapshot_threshold: 10000
+    trailing_logs: 1000
+  rebalance:
+    # 高级项：默认不要改（不确定就保持默认）。
+    # - max_rate：限制再平衡带宽，避免迁移抢占业务带宽。支持 "100MB"（Bytes/s）或 "1Gbps"（Bits/s）格式。
+    # - min_ttl：TTL 太短的数据可跳过迁移以减少无意义搬运。
+    max_rate: "20Mbps"
+    min_ttl: "60s"
+  shutdown:
+    # 高级项：默认不要改（不确定就保持默认）。
+    # - timeout：优雅退出时等待数据迁移/收敛的超时；太短可能导致退出不干净。
+    # - force_leave：超时后是否强制离开集群；可能带来一致性/可用性权衡，谨慎开启。
+    timeout: "60s"
+    force_leave: false
+
+telemetry:
+  metrics:
+    # 若开启鉴权：Prometheus 抓取 /metrics 时必须提供 `role=metrics` 或 `role=admin` 的 API Key。
+    # 推荐（Prometheus 兼容）：Authorization: Bearer <api_key>
+    # 兼容（CLI/调试）：X-API-Key: <api_key>
+    auth_enabled: true
+  logging:
+    level: "info"
+    dump_config: false
+  tracing:
+    enabled: false
+    endpoint: ""
+    sampling_ratio: 0.01
+
+security:
+  auth:
+    # allow_list（可选，默认不启用）：
+    # - 用于限制"哪些来源 IP 允许使用 API Key 访问 TokMesh"（IP/CIDR 列表）。
+    # - 留空（[]）= 不限制；非空 = 仅允许列表内来源。
+    # - 组合规则：若某个 API Key 自身也配置了 allow_list，则与本全局 allow_list 取交集（必须都命中才允许）。
+    # - 集群提示：本项应在所有节点保持一致（每个节点都对外提供 API 时，避免负载均衡下行为不一致）。
+    # - 支持：CIDR（如 "10.0.0.0/8"、"2001:db8::/64"），或单个 IP（如 "192.168.1.10"、"2001:db8::1"；等价于 /32 或 /128）。
+    # - 反向代理/Ingress/NAT 场景：当前版本不读取/不信任 X-Forwarded-For / X-Real-IP，因此不要依赖本项；请在网关/安全组侧实现来源 IP 限制。
+    allow_list: []
+    # 示例（注释）：
+    # allow_list:
+    #   - "10.0.0.0/8"
+    #   - "192.168.1.10"
+    #   - "192.168.1.0/24"
+    #   - "2001:db8::/64"

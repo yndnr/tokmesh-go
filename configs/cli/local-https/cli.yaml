@@ -1,0 +1,17 @@
+# TokMesh CLI - 本地回环 HTTPS（需要 CA + API Key）
+
+default: local
+
+targets:
+  local:
+    url: https://127.0.0.1:5443
+    # 注意：即使是 127.0.0.1 回环 HTTPS，也必须提供 API Key（可通过 -k/交互输入）。
+    # api_key: "<key_id>:<key_secret>"  # 仅开发环境可选；生产环境禁止明文存储
+    tls:
+      # 建议使用绝对路径；若使用相对路径，推荐实现按“配置文件所在目录”解析，而非进程 CWD。
+      ca_file: /etc/tokmesh-cli/certs/ca.crt
+
+defaults:
+  output: table
+  timeout: 30s
+  no_color: false

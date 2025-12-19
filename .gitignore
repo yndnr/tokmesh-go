@@ -1,0 +1,59 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+/tokmesh
+/tokmesh-server
+/tokmesh-cli
+/.gocache/
+**/.cache/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Go workspace file
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
+
+# Generated protobuf stubs (do not commit; generated via go generate)
+src/api/proto/v1/cluster.pb.go
+Thumbs.db
+
+# Data and logs
+*.log
+/data/
+/logs/
+*.wal
+*.snapshot
+
+# Config
+/configs/*.local.yaml
+/configs/*.dev.yaml
+!configs/*.example.yaml
+
+# Config certs (dev-only; keep public certs, ignore private keys)
+/configs/**/certs/*.key
+/configs/**/certs/*.csr
+/configs/**/certs/*.srl
+/configs/**/certs/*.pem

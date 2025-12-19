@@ -1,0 +1,80 @@
+# TokMesh Server - 最小配置（单机）
+#
+# 目标：仅覆盖"最核心且最容易误配"的配置项；其余配置使用服务端内置默认值。
+# 参考：
+# - `specs/1-requirements/RQ-0502-配置管理需求.md`（配置键与默认值）
+# - `configs/server/cluster-minimal/`（集群启用示例）
+
+server:
+  http:
+    enabled: true
+    # 安全提示：监听 `0.0.0.0` / `[::]` 等价于"对外暴露"。默认仅回环更安全。
+    address: "127.0.0.1:5080"
+
+  https:
+    enabled: false
+    # 建议：生产环境启用 HTTPS；对外服务优先通过 5443（TLS）提供，5080 明文仅用于本机/受控内网。
+    address: "127.0.0.1:5443"
+    tls:
+      cert_file: ""
+      key_file: ""
+      client_ca_file: ""
+
+telemetry:
+  metrics:
+    # /metrics 抓取鉴权：
+    # - auth_enabled=true：默认需要鉴权（减少信息暴露面），仅允许 `role=metrics` 或 `role=admin` 的 API Key 访问
+    # - auth_enabled=false：仅建议用于本机/受控内网的快速抓取；对外暴露会扩大信息泄露面
+    #   推荐：Authorization: Bearer <api_key>
+    #   兼容：X-API-Key: <api_key>
+    auth_enabled: true
+  logging:
+    level: "info"
+    # 安全提示：生产环境不要开启（可能暴露路径/拓扑/地址等运维敏感信息；即使脱敏也存在侧信道风险）。
+    dump_config: false
+  tracing:
+    # Tracing（可选，默认关闭）：
+    # - 仅在排障/链路分析时启用；开启会增加 CPU/网络开销，并可能包含请求路径/错误等信息（注意日志/数据合规）。
+    # - enabled=true 时必须提供 endpoint（通常指向 OpenTelemetry Collector）。
+    enabled: false
+    endpoint: ""
+    sampling_ratio: 0.01
+
+storage:
+  # 说明：本段可整段删除（服务端有内置默认值）。
+  # - 仅当你需要自定义"数据目录/刷盘策略/快照策略"时，才保留并修改本段。
+  #
+  # 存储目录建议：
+  # - 生产：建议使用可持久化磁盘（Linux 服务化常用 `/var/lib/tokmesh-server/` 下），并确保 tokmesh 运行用户可写
+  #   - 例如：`/var/lib/tokmesh-server/wal`、`/var/lib/tokmesh-server/snapshots`
+  # - 容器：必须挂载持久化卷，否则重启会丢数据/影响恢复
+  wal:
+    dir: "./data/wal"
+    # sync_mode：
+    # - batch（默认）：性能更好；崩溃时可能丢最近一小段未刷盘数据
+    # - sync：更稳健（每次写都刷盘），但性能可能下降
+    sync_mode: "batch"
+    sync_interval: "1s"
+    batch_count: 64
+    batch_size: "1MB"
+  snapshot:
+    dir: "./data/snapshots"
+    interval: "1h"
+    threshold: "1GB"
+
+security:
+  auth:
+    # allow_list（可选，默认不启用）：
+    # - 用于限制"哪些来源 IP 允许使用 API Key 访问 TokMesh"（IP/CIDR 列表）。
+    # - 留空（[]）= 不限制；非空 = 仅允许列表内来源。
+    # - 组合规则：若某个 API Key 自身也配置了 allow_list，则与本全局 allow_list 取交集（必须都命中才允许）。
+    # - 集群提示：若集群每个节点都对外提供 API，建议所有节点使用一致的 allow_list（避免负载均衡下行为不一致）。
+    # - 支持：CIDR（如 "10.0.0.0/8"、"2001:db8::/64"），或单个 IP（如 "192.168.1.10"、"2001:db8::1"；等价于 /32 或 /128）。
+    # - 反向代理/Ingress/NAT 场景：当前版本不读取/不信任 X-Forwarded-For / X-Real-IP，因此不要依赖本项；请在网关/安全组侧实现来源 IP 限制。
+    allow_list: []
+    # 示例（注释）：
+    # allow_list:
+    #   - "10.0.0.0/8"
+    #   - "192.168.1.10"
+    #   - "192.168.1.0/24"
+    #   - "2001:db8::/64"
