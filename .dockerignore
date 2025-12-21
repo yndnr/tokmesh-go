@@ -1,0 +1,62 @@
+# Build artifacts
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test and coverage files
+*.test
+*.out
+coverage.html
+coverage.out
+
+# Development files
+.git/
+.github/
+.gitignore
+.gocache/
+.claude/
+
+# Documentation
+README.md
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+*.md
+!src/**/*.md
+
+# Specs and design docs
+specs/
+patents/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Deployment (not needed in image)
+deployments/
+scripts/
+Makefile
+Dockerfile
+docker-compose*.yaml
+
+# Config files (will copy specific ones)
+configs/
+!configs/server/minimal/
+
+# Audit and temp files
+audits/
+*.sh
+*.ps1
+process_audits.sh
+reaudit_all.sh
+audit_summary.md

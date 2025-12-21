@@ -1,0 +1,161 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tokmesh
+  namespace: default
+  labels:
+    app: tokmesh
+spec:
+  serviceName: tokmesh
+  replicas: 3
+  selector:
+    matchLabels:
+      app: tokmesh
+  template:
+    metadata:
+      labels:
+        app: tokmesh
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: tokmesh
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: "OnRootMismatch"
+
+      terminationGracePeriodSeconds: 30
+
+      containers:
+      - name: tokmesh
+        image: tokmesh/tokmesh-server:latest
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: http
+          containerPort: 5080
+          protocol: TCP
+        - name: https
+          containerPort: 5443
+          protocol: TCP
+        - name: redis
+          containerPort: 6379
+          protocol: TCP
+        - name: cluster
+          containerPort: 5343
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+
+        env:
+        # Node identity
+        - name: TOKMESH_CLUSTER_NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+
+        # Cluster configuration
+        - name: TOKMESH_CLUSTER_ENABLED
+          value: "true"
+        - name: TOKMESH_CLUSTER_ADDR
+          value: "0.0.0.0:5343"
+        - name: TOKMESH_CLUSTER_ADVERTISE_ADDR
+          value: "$(POD_IP):5343"
+
+        # Server configuration
+        - name: TOKMESH_SERVER_HTTP_ADDR
+          value: "0.0.0.0:5080"
+        - name: TOKMESH_STORAGE_DATA_DIR
+          value: "/var/lib/tokmesh-server"
+
+        # Logging
+        - name: TOKMESH_LOG_LEVEL
+          value: "info"
+        - name: TOKMESH_LOG_FORMAT
+          value: "json"
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/tokmesh-server
+        - name: config
+          mountPath: /etc/tokmesh-server
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 5080
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+
+      volumes:
+      - name: config
+        configMap:
+          name: tokmesh-config
+      - name: tmp
+        emptyDir: {}
+
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app: tokmesh
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      # Uncomment to use a specific storage class:
+      # storageClassName: fast-ssd

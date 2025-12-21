@@ -1,0 +1,55 @@
+[Unit]
+Description=TokMesh Server - Session/Token Cache Service
+Documentation=https://github.com/yndnr/tokmesh-go
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tokmesh
+Group=tokmesh
+
+# Binary and configuration
+ExecStart=/usr/local/bin/tokmesh-server --config /etc/tokmesh-server/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=5
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=4096
+
+# Directories
+WorkingDirectory=/var/lib/tokmesh-server
+RuntimeDirectory=tokmesh-server
+RuntimeDirectoryMode=0750
+StateDirectory=tokmesh-server
+StateDirectoryMode=0750
+ConfigurationDirectory=tokmesh-server
+ConfigurationDirectoryMode=0750
+LogsDirectory=tokmesh-server
+LogsDirectoryMode=0750
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tokmesh-server
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

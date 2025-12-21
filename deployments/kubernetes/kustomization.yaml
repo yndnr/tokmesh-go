@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: default
+
+# Common labels applied to all resources
+commonLabels:
+  app: tokmesh
+  app.kubernetes.io/name: tokmesh
+  app.kubernetes.io/component: cache-server
+
+# Resources
+resources:
+  - serviceaccount.yaml
+  - configmap.yaml
+  - statefulset.yaml
+  - service.yaml
+
+# Images
+images:
+  - name: tokmesh/tokmesh-server
+    newTag: latest
+
+# ConfigMap generator (alternative to configmap.yaml)
+# configMapGenerator:
+#   - name: tokmesh-config
+#     files:
+#       - config.yaml=../../configs/server/minimal/config.yaml
+
+# Replicas
+replicas:
+  - name: tokmesh
+    count: 3
+
+# Common annotations
+commonAnnotations:
+  tokmesh.io/managed-by: kustomize

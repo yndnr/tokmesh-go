@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  tokmesh-server:
+    image: tokmesh/tokmesh-server:latest
+    container_name: tokmesh-server
+    hostname: tokmesh-server
+
+    # Ports
+    ports:
+      - "5080:5080"   # HTTP API
+      - "5443:5443"   # HTTPS API (if TLS enabled)
+      - "5343:5343"   # Cluster communication (if cluster mode)
+
+    # Volumes
+    volumes:
+      - tokmesh-data:/var/lib/tokmesh-server
+      - ./config.yaml:/etc/tokmesh-server/config.yaml:ro
+      # Optional: TLS certificates
+      # - ./certs:/etc/tokmesh-server/certs:ro
+
+    # Environment variables (override config file)
+    environment:
+      - TOKMESH_SERVER_HTTP_ADDR=0.0.0.0:5080
+      - TOKMESH_STORAGE_DATA_DIR=/var/lib/tokmesh-server
+      - TOKMESH_LOG_LEVEL=info
+      - TOKMESH_LOG_FORMAT=json
+      # Uncomment for cluster mode:
+      # - TOKMESH_CLUSTER_ENABLED=true
+      # - TOKMESH_CLUSTER_NODE_ID=node-1
+      # - TOKMESH_CLUSTER_ADDR=0.0.0.0:5343
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Security
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    # Network
+    networks:
+      - tokmesh-network
+
+  # Optional: Redis protocol compatibility test
+  # redis-cli:
+  #   image: redis:7-alpine
+  #   container_name: redis-cli
+  #   command: redis-cli -h tokmesh-server -p 6379
+  #   networks:
+  #     - tokmesh-network
+  #   profiles:
+  #     - tools
+
+volumes:
+  tokmesh-data:
+    driver: local
+
+networks:
+  tokmesh-network:
+    driver: bridge

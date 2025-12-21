@@ -1,0 +1,87 @@
+---
+# Headless Service for StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: tokmesh
+  namespace: default
+  labels:
+    app: tokmesh
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    app: tokmesh
+  ports:
+  - name: http
+    port: 5080
+    targetPort: 5080
+    protocol: TCP
+  - name: https
+    port: 5443
+    targetPort: 5443
+    protocol: TCP
+  - name: redis
+    port: 6379
+    targetPort: 6379
+    protocol: TCP
+  - name: cluster
+    port: 5343
+    targetPort: 5343
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+
+---
+# External LoadBalancer Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: tokmesh-external
+  namespace: default
+  labels:
+    app: tokmesh
+  annotations:
+    # Cloud provider specific annotations
+    # AWS:
+    # service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # GCP:
+    # cloud.google.com/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  selector:
+    app: tokmesh
+  ports:
+  - name: http
+    port: 5080
+    targetPort: 5080
+    protocol: TCP
+  - name: https
+    port: 5443
+    targetPort: 5443
+    protocol: TCP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+
+---
+# Service for Metrics (Prometheus)
+apiVersion: v1
+kind: Service
+metadata:
+  name: tokmesh-metrics
+  namespace: default
+  labels:
+    app: tokmesh
+spec:
+  type: ClusterIP
+  selector:
+    app: tokmesh
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
