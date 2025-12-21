@@ -12,6 +12,8 @@ option go_package = "github.com/yndnr/tokmesh-go/api/proto/v1;clusterv1";
 // ClusterService defines the internal cluster control-plane RPC.
 //
 // This service MUST NOT be exposed externally.
+// @design DS-0401
+// @req RQ-0401
 service ClusterService {
   // Join adds the node to the cluster.
   rpc Join(JoinRequest) returns (JoinResponse);
@@ -21,6 +23,9 @@ service ClusterService {
 
   // TransferShard streams shard migration data (rebalance).
   rpc TransferShard(stream TransferShardRequest) returns (TransferShardResponse);
+
+  // Ping checks if a node is alive.
+  rpc Ping(PingRequest) returns (PingResponse);
 }
 
 message JoinRequest {
@@ -37,6 +42,9 @@ message JoinRequest {
 message JoinResponse {
   bool accepted = 1;
   string leader_node_id = 2;
+  string leader_addr = 3;
+  repeated Member members = 4;
+  ShardMap shard_map = 5;
 }
 
 message GetShardMapRequest {
@@ -44,18 +52,50 @@ message GetShardMapRequest {
 }
 
 message GetShardMapResponse {
-  // TODO: Replace with a strongly-typed shard map schema.
-  bytes shard_map = 1;
+  ShardMap shard_map = 1;
   uint64 version = 2;
 }
 
 message TransferShardRequest {
-  // TODO: Define the shard transfer protocol and data model.
   uint32 shard_id = 1;
-  bytes payload = 2;
+  string session_id = 2;
+  bytes session_data = 3;
 }
 
 message TransferShardResponse {
   bool success = 1;
   uint64 transferred_items = 2;
+}
+
+// PingRequest pings a node for health check.
+message PingRequest {
+  string node_id = 1;
+  int64 timestamp = 2;
+}
+
+// PingResponse responds to ping.
+message PingResponse {
+  string node_id = 1;
+  int64 timestamp = 2;
+  bool is_leader = 3;
+}
+
+// Member represents a cluster member node.
+message Member {
+  string node_id = 1;
+  string addr = 2;
+  string state = 3;
+  bool is_leader = 4;
+}
+
+// ShardMap represents the shard assignment mapping.
+message ShardMap {
+  map<uint32, string> shards = 1;
+  map<uint32, ReplicaSet> replicas = 2;
+  uint64 version = 3;
+}
+
+// ReplicaSet contains replica node IDs for a shard.
+message ReplicaSet {
+  repeated string node_ids = 1;
 }
