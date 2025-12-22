@@ -1069,3 +1069,493 @@ func TestHandler_RotateAPIKey(t *testing.T) {
 		}
 	})
 }
+
+// TestHandler_ListSessions_Pagination tests session listing with pagination and filters.
+func TestHandler_ListSessions_Pagination(t *testing.T) {
+	h, sessionRepo, _ := testHandler()
+
+	// Create test sessions with different devices
+	for i := 0; i < 5; i++ {
+		session := &domain.Session{
+			ID:        newTestSessionID(),
+			UserID:    "user-pagination-test",
+			DeviceID:  "device-" + string(rune('A'+i)),
+			TokenHash: "test-token-hash-pagination-" + string(rune('A'+i)),
+			CreatedAt: time.Now().UnixMilli(),
+			ExpiresAt: time.Now().Add(24 * time.Hour).UnixMilli(),
+			Version:   1,
+		}
+		sessionRepo.Create(context.Background(), session)
+	}
+
+	t.Run("filters by user_id", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/sessions?user_id=user-pagination-test", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("filters by device_id", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/sessions?device_id=device-A", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("supports pagination", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/sessions?page=1&page_size=2", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("handles invalid page parameter", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/sessions?page=invalid", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		// Should still return OK, ignoring invalid param
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("handles invalid page_size parameter", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/sessions?page_size=invalid", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		// Should still return OK, ignoring invalid param
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("filters by status", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/sessions?status=active", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestHandler_CreateAPIKey_Validation tests API key creation validation.
+func TestHandler_CreateAPIKey_Validation(t *testing.T) {
+	h, _, _ := testHandler()
+
+	t.Run("returns error when name is missing", func(t *testing.T) {
+		body := `{"role": "admin"}`
+		req := httptest.NewRequest("POST", "/admin/v1/keys", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("returns error when role is missing", func(t *testing.T) {
+		body := `{"name": "Test Key"}`
+		req := httptest.NewRequest("POST", "/admin/v1/keys", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("returns error for invalid role", func(t *testing.T) {
+		body := `{"name": "Test Key", "role": "invalid_role"}`
+		req := httptest.NewRequest("POST", "/admin/v1/keys", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp Response
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		// Error response uses error code, not "ERROR"
+		if resp.Code != "TM-ARG-4001" {
+			t.Errorf("expected code 'TM-ARG-4001', got '%s'", resp.Code)
+		}
+	})
+
+	t.Run("returns error for invalid request body", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/admin/v1/keys", strings.NewReader("invalid json"))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("accepts valid metrics role", func(t *testing.T) {
+		body := `{"name": "Metrics Key", "role": "metrics"}`
+		req := httptest.NewRequest("POST", "/admin/v1/keys", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Errorf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("accepts valid validator role", func(t *testing.T) {
+		body := `{"name": "Validator Key", "role": "validator"}`
+		req := httptest.NewRequest("POST", "/admin/v1/keys", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Errorf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("accepts valid issuer role", func(t *testing.T) {
+		body := `{"name": "Issuer Key", "role": "issuer"}`
+		req := httptest.NewRequest("POST", "/admin/v1/keys", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Errorf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestHandler_GCTrigger_Expired tests garbage collection trigger with expired sessions.
+func TestHandler_GCTrigger_Expired(t *testing.T) {
+	h, sessionRepo, _ := testHandler()
+
+	// Create expired sessions
+	for i := 0; i < 3; i++ {
+		session := &domain.Session{
+			ID:        newTestSessionID(),
+			UserID:    "user-gc-test",
+			TokenHash: "test-token-hash-gc-" + string(rune('A'+i)),
+			CreatedAt: time.Now().Add(-48 * time.Hour).UnixMilli(),
+			ExpiresAt: time.Now().Add(-24 * time.Hour).UnixMilli(), // Already expired
+			Version:   1,
+		}
+		sessionRepo.Create(context.Background(), session)
+	}
+
+	t.Run("triggers GC successfully", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/admin/v1/gc/trigger", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp Response
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp.Code != "OK" {
+			t.Errorf("expected code 'OK', got '%s'", resp.Code)
+		}
+
+		data, ok := resp.Data.(map[string]any)
+		if !ok {
+			t.Fatal("expected data to be a map")
+		}
+
+		if data["success"] != true {
+			t.Error("expected success to be true")
+		}
+
+		if data["triggered_at"] == nil {
+			t.Error("expected triggered_at in response")
+		}
+	})
+}
+
+// TestHandler_ClientIP tests client IP extraction from headers.
+func TestHandler_ClientIP(t *testing.T) {
+	t.Run("extracts IP from X-Forwarded-For header", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("X-Forwarded-For", "192.168.1.100, 10.0.0.1")
+
+		ip := getClientIP(req)
+		if ip != "192.168.1.100" {
+			t.Errorf("expected '192.168.1.100', got '%s'", ip)
+		}
+	})
+
+	t.Run("extracts IP from X-Real-IP header", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("X-Real-IP", "10.0.0.50")
+
+		ip := getClientIP(req)
+		if ip != "10.0.0.50" {
+			t.Errorf("expected '10.0.0.50', got '%s'", ip)
+		}
+	})
+
+	t.Run("prefers X-Forwarded-For over X-Real-IP", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("X-Forwarded-For", "192.168.1.100")
+		req.Header.Set("X-Real-IP", "10.0.0.50")
+
+		ip := getClientIP(req)
+		if ip != "192.168.1.100" {
+			t.Errorf("expected '192.168.1.100', got '%s'", ip)
+		}
+	})
+
+	t.Run("falls back to RemoteAddr", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.RemoteAddr = "127.0.0.1:8080"
+
+		ip := getClientIP(req)
+		if ip != "127.0.0.1" {
+			t.Errorf("expected '127.0.0.1', got '%s'", ip)
+		}
+	})
+
+	t.Run("handles RemoteAddr without port", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.RemoteAddr = "192.168.1.1"
+
+		ip := getClientIP(req)
+		if ip != "192.168.1.1" {
+			t.Errorf("expected '192.168.1.1', got '%s'", ip)
+		}
+	})
+}
+
+// TestHandler_RequestID tests request ID handling.
+func TestHandler_RequestID(t *testing.T) {
+	t.Run("extracts request ID from header", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("X-Request-ID", "test-request-123")
+
+		reqID := getRequestID(req)
+		if reqID != "test-request-123" {
+			t.Errorf("expected 'test-request-123', got '%s'", reqID)
+		}
+	})
+
+	t.Run("returns empty string when no request ID", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+
+		reqID := getRequestID(req)
+		if reqID != "" {
+			t.Errorf("expected empty string, got '%s'", reqID)
+		}
+	})
+}
+
+// TestHandler_UpdateAPIKeyStatus_InvalidBody tests invalid body handling.
+func TestHandler_UpdateAPIKeyStatus_InvalidBody(t *testing.T) {
+	h, _, _ := testHandler()
+
+	t.Run("returns error for invalid request body", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/admin/v1/keys/some-key/status", strings.NewReader("invalid json"))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestHandler_ListAPIKeys_WithRole tests listing API keys with role filter.
+func TestHandler_ListAPIKeys_WithRole(t *testing.T) {
+	h, _, apiKeyRepo := testHandler()
+
+	// Create test API keys with different roles
+	keys := []*domain.APIKey{
+		{
+			KeyID:      "tmak_admin-key-1",
+			Name:       "Admin Key 1",
+			Role:       domain.RoleAdmin,
+			Status:     domain.KeyStatusActive,
+			SecretHash: "hash1",
+			CreatedAt:  time.Now().UnixMilli(),
+		},
+		{
+			KeyID:      "tmak_metrics-key-1",
+			Name:       "Metrics Key 1",
+			Role:       domain.RoleMetrics,
+			Status:     domain.KeyStatusActive,
+			SecretHash: "hash2",
+			CreatedAt:  time.Now().UnixMilli(),
+		},
+	}
+
+	for _, key := range keys {
+		apiKeyRepo.Create(context.Background(), key)
+	}
+
+	t.Run("filters by role", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/admin/v1/keys?role=admin", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestHandler_CreateSession_WithTTL tests session creation with custom TTL.
+func TestHandler_CreateSession_WithTTL(t *testing.T) {
+	h, _, _ := testHandler()
+
+	t.Run("creates session with custom TTL", func(t *testing.T) {
+		body := `{"user_id": "user-ttl-test", "ttl_seconds": 3600}`
+		req := httptest.NewRequest("POST", "/sessions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Errorf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("creates session with data", func(t *testing.T) {
+		body := `{"user_id": "user-data-test", "data": {"key": "value"}}`
+		req := httptest.NewRequest("POST", "/sessions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Errorf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestHandler_RenewSession_InvalidBody tests renew with invalid body.
+func TestHandler_RenewSession_InvalidBody(t *testing.T) {
+	h, sessionRepo, _ := testHandler()
+
+	// Create a test session
+	session := &domain.Session{
+		ID:        "tmss-renew-invalid-body-12345",
+		UserID:    "user-123",
+		TokenHash: "test-token-hash-renew-invalid",
+		CreatedAt: time.Now().UnixMilli(),
+		ExpiresAt: time.Now().Add(1 * time.Hour).UnixMilli(),
+		Version:   1,
+	}
+	sessionRepo.Create(context.Background(), session)
+
+	t.Run("returns error for invalid request body", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/sessions/"+session.ID+"/renew", strings.NewReader("invalid json"))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("renews with default TTL when not specified", func(t *testing.T) {
+		body := `{}`
+		req := httptest.NewRequest("POST", "/sessions/"+session.ID+"/renew", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestHandler_ResponseHeaders tests response headers.
+func TestHandler_ResponseHeaders(t *testing.T) {
+	h, _, _ := testHandler()
+
+	t.Run("sets Content-Type header", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/health", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		contentType := rec.Header().Get("Content-Type")
+		if contentType != "application/json" {
+			t.Errorf("expected Content-Type 'application/json', got '%s'", contentType)
+		}
+	})
+
+	t.Run("sets X-Request-ID header from input", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/health", nil)
+		req.Header.Set("X-Request-ID", "custom-request-id")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		reqID := rec.Header().Get("X-Request-ID")
+		if reqID != "custom-request-id" {
+			t.Errorf("expected X-Request-ID 'custom-request-id', got '%s'", reqID)
+		}
+	})
+
+	t.Run("sets X-Error-Code header on error", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/sessions/non-existent", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		errorCode := rec.Header().Get("X-Error-Code")
+		if errorCode == "" {
+			t.Error("expected X-Error-Code header to be set on error")
+		}
+	})
+}
