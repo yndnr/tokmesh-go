@@ -390,4 +390,4 @@ func confirmWithInput(prompt, expected string) bool {
 
 | 日期 | 版本 | 变更说明 | 作者 |
 |------|------|----------|------|
-| 2025-12-18 | v1.0 | 初始版本 | Claude Code |
+| 2025-12-18 | v1.0 | 初始版本 | yndnr |

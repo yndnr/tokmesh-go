@@ -142,8 +142,8 @@ TokMesh 项目在 DS-0301:4.1 中最初选择 Gin 作为 HTTP 框架。经过两
 
 | 日期 | 版本 | 修改内容 | 作者 |
 |------|------|---------|------|
-| 2025-12-14 | 1.0 | 初始版本：Gin → Chi | Claude |
-| 2025-12-15 | 2.0 | 最终决策：Chi → stdlib + Connect-Go | Claude |
+| 2025-12-14 | 1.0 | 初始版本：Gin → Chi | yndnr |
+| 2025-12-15 | 2.0 | 最终决策：Chi → stdlib + Connect-Go | yndnr |
 
 ---
 

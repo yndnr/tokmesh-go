@@ -196,7 +196,7 @@ def classify_audit_result(critical_count, warning_count, score):
 2. 补充单元测试覆盖 TokenHash 格式错误的情况
 3. 重新提交修复
 
-**复核者**: Claude Code
+**复核者**: yndnr
 ```
 
 ---
