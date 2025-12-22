@@ -593,3 +593,114 @@ func TestNewServer_ValidationErrors(t *testing.T) {
 		}
 	})
 }
+
+// TestServer_CheckClusterParity tests checkClusterParity with various node counts.
+func TestServer_CheckClusterParity(t *testing.T) {
+	cfg := Config{
+		NodeID:            "test-parity",
+		RaftBindAddr:      "127.0.0.1:15340",
+		GossipBindAddr:    "127.0.0.1",
+		GossipBindPort:    15341,
+		RaftDataDir:       t.TempDir(),
+		Bootstrap:         true,
+		ReplicationFactor: 1,
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	server, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	t.Run("OddNodeCount", func(t *testing.T) {
+		// Add 3 members (odd number)
+		server.fsm.mu.Lock()
+		server.fsm.members["node-1"] = &Member{NodeID: "node-1", Addr: "127.0.0.1:5001"}
+		server.fsm.members["node-2"] = &Member{NodeID: "node-2", Addr: "127.0.0.1:5002"}
+		server.fsm.members["node-3"] = &Member{NodeID: "node-3", Addr: "127.0.0.1:5003"}
+		server.fsm.mu.Unlock()
+
+		// Should not panic and log OK
+		server.checkClusterParity()
+	})
+
+	t.Run("EvenNodeCount", func(t *testing.T) {
+		// Add 4 members (even number)
+		server.fsm.mu.Lock()
+		server.fsm.members["node-4"] = &Member{NodeID: "node-4", Addr: "127.0.0.1:5004"}
+		server.fsm.mu.Unlock()
+
+		// Should not panic and log warning
+		server.checkClusterParity()
+	})
+
+	t.Run("EmptyCluster", func(t *testing.T) {
+		// Clear all members
+		server.fsm.mu.Lock()
+		server.fsm.members = make(map[string]*Member)
+		server.fsm.mu.Unlock()
+
+		// Should handle empty cluster gracefully
+		server.checkClusterParity()
+	})
+}
+
+// TestServer_HandleLeaderChange tests handleLeaderChange method.
+// Note: handleLeaderChange requires initialized Raft node, so we skip the actual call
+// and verify state management through setLeaderState helper.
+func TestServer_HandleLeaderChange(t *testing.T) {
+	cfg := Config{
+		NodeID:            "test-leader-change",
+		RaftBindAddr:      "127.0.0.1:15342",
+		GossipBindAddr:    "127.0.0.1",
+		GossipBindPort:    15343,
+		RaftDataDir:       t.TempDir(),
+		Bootstrap:         true,
+		ReplicationFactor: 1,
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	server, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// Test state transitions via setLeaderState (simulating what handleLeaderChange would do)
+	t.Run("BecomeLeaderState", func(t *testing.T) {
+		setLeaderState(server, false, "", "")
+
+		// Verify initial state
+		if server.IsLeader() {
+			t.Error("expected IsLeader() = false initially")
+		}
+
+		// Simulate becoming leader
+		setLeaderState(server, true, "test-leader-change", "127.0.0.1:15342")
+
+		if !server.IsLeader() {
+			t.Error("expected IsLeader() = true after state change")
+		}
+	})
+
+	t.Run("LoseLeadershipState", func(t *testing.T) {
+		setLeaderState(server, true, "test-leader-change", "127.0.0.1:15342")
+
+		// Simulate losing leadership
+		setLeaderState(server, false, "new-leader", "127.0.0.1:9999")
+
+		if server.IsLeader() {
+			t.Error("expected IsLeader() = false after losing leadership")
+		}
+
+		leaderID, leaderAddr := server.Leader()
+		if leaderID != "new-leader" {
+			t.Errorf("expected leaderID 'new-leader', got '%s'", leaderID)
+		}
+		if leaderAddr != "127.0.0.1:9999" {
+			t.Errorf("expected leaderAddr '127.0.0.1:9999', got '%s'", leaderAddr)
+		}
+	})
+}
+
+// TestServer_WaitForLeader is skipped - requires initialized Raft node.
+// Covered by integration tests.
