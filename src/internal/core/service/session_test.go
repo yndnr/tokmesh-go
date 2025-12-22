@@ -463,3 +463,439 @@ func TestSessionService_List(t *testing.T) {
 		}
 	})
 }
+
+// TestSessionService_Touch tests session touch (last_active update).
+func TestSessionService_Touch(t *testing.T) {
+	repo := newMockSessionRepo()
+	tokenSvc := NewTokenService(newMockTokenRepo(), nil)
+	svc := NewSessionService(repo, tokenSvc)
+
+	ctx := context.Background()
+
+	// Create a session
+	createResp, err := svc.Create(ctx, &CreateSessionRequest{
+		UserID: "user123",
+		TTL:    time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Wait a bit to ensure time difference
+	time.Sleep(10 * time.Millisecond)
+
+	t.Run("successful touch", func(t *testing.T) {
+		resp, err := svc.Touch(ctx, &TouchSessionRequest{
+			SessionID: createResp.SessionID,
+			ClientIP:  "192.168.1.100",
+		})
+		if err != nil {
+			t.Fatalf("Touch failed: %v", err)
+		}
+
+		if resp.LastActive <= createResp.Session.LastActive {
+			t.Error("LastActive should be updated")
+		}
+
+		// Verify IP was updated
+		session, err := svc.Get(ctx, &GetSessionRequest{SessionID: createResp.SessionID})
+		if err != nil {
+			t.Fatalf("Get failed: %v", err)
+		}
+		if session.LastAccessIP != "192.168.1.100" {
+			t.Errorf("LastAccessIP = %s, want 192.168.1.100", session.LastAccessIP)
+		}
+	})
+
+	t.Run("touch non-existent session", func(t *testing.T) {
+		_, err := svc.Touch(ctx, &TouchSessionRequest{
+			SessionID: "non-existent",
+		})
+		if err == nil {
+			t.Error("Expected error for non-existent session")
+		}
+	})
+
+	t.Run("missing session_id", func(t *testing.T) {
+		_, err := svc.Touch(ctx, &TouchSessionRequest{
+			SessionID: "",
+		})
+		if err == nil {
+			t.Error("Expected error for missing session_id")
+		}
+	})
+
+	t.Run("touch expired session", func(t *testing.T) {
+		// Create a session with very short TTL
+		shortResp, err := svc.Create(ctx, &CreateSessionRequest{
+			UserID: "user_short",
+			TTL:    time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("Create failed: %v", err)
+		}
+
+		// Wait for expiration
+		time.Sleep(5 * time.Millisecond)
+
+		_, err = svc.Touch(ctx, &TouchSessionRequest{
+			SessionID: shortResp.SessionID,
+		})
+		if err == nil {
+			t.Error("Expected error for expired session")
+		}
+	})
+}
+
+// TestSessionService_GC tests garbage collection of expired sessions.
+func TestSessionService_GC(t *testing.T) {
+	repo := newMockSessionRepo()
+	tokenSvc := NewTokenService(newMockTokenRepo(), nil)
+	svc := NewSessionService(repo, tokenSvc)
+
+	ctx := context.Background()
+
+	// Create sessions with different TTLs
+	for i := 0; i < 3; i++ {
+		_, err := svc.Create(ctx, &CreateSessionRequest{
+			UserID: "user_long",
+			TTL:    time.Hour,
+		})
+		if err != nil {
+			t.Fatalf("Create long-lived session failed: %v", err)
+		}
+	}
+
+	for i := 0; i < 2; i++ {
+		_, err := svc.Create(ctx, &CreateSessionRequest{
+			UserID: "user_short",
+			TTL:    time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("Create short-lived session failed: %v", err)
+		}
+	}
+
+	// Wait for short sessions to expire
+	time.Sleep(5 * time.Millisecond)
+
+	t.Run("gc cleans expired sessions", func(t *testing.T) {
+		count, err := svc.GC(ctx)
+		if err != nil {
+			t.Fatalf("GC failed: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("GC cleaned %d sessions, want 2", count)
+		}
+	})
+
+	t.Run("gc with no expired sessions", func(t *testing.T) {
+		count, err := svc.GC(ctx)
+		if err != nil {
+			t.Fatalf("GC failed: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("GC cleaned %d sessions, want 0", count)
+		}
+	})
+}
+
+// TestSessionService_CreateWithToken tests session creation with client-provided token.
+func TestSessionService_CreateWithToken(t *testing.T) {
+	repo := newMockSessionRepo()
+	tokenSvc := NewTokenService(newMockTokenRepo(), nil)
+	svc := NewSessionService(repo, tokenSvc)
+
+	ctx := context.Background()
+
+	t.Run("successful creation with token", func(t *testing.T) {
+		// Generate a valid token format: tmtk_ (5) + 43 Base64 chars = 48 total
+		token := "tmtk_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq"
+		sessionID := "tmss-01kct9ns8he7a9m022x0tgbhds"
+
+		req := &CreateSessionWithTokenRequest{
+			SessionID: sessionID,
+			UserID:    "user123",
+			Token:     token,
+			DeviceID:  "device001",
+			TTL:       time.Hour,
+			ClientIP:  "127.0.0.1",
+		}
+
+		resp, err := svc.CreateWithToken(ctx, req)
+		if err != nil {
+			t.Fatalf("CreateWithToken failed: %v", err)
+		}
+
+		if resp.SessionID != sessionID {
+			t.Errorf("SessionID = %s, want %s", resp.SessionID, sessionID)
+		}
+		if resp.Token != token {
+			t.Errorf("Token = %s, want %s", resp.Token, token)
+		}
+	})
+
+	t.Run("missing session_id", func(t *testing.T) {
+		req := &CreateSessionWithTokenRequest{
+			SessionID: "",
+			UserID:    "user123",
+			Token:     "tmtk_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq",
+		}
+
+		_, err := svc.CreateWithToken(ctx, req)
+		if err == nil {
+			t.Error("Expected error for missing session_id")
+		}
+	})
+
+	t.Run("missing user_id", func(t *testing.T) {
+		req := &CreateSessionWithTokenRequest{
+			SessionID: "tmss-01kct9ns8he7a9m022x0tgbhds",
+			UserID:    "",
+			Token:     "tmtk_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq",
+		}
+
+		_, err := svc.CreateWithToken(ctx, req)
+		if err == nil {
+			t.Error("Expected error for missing user_id")
+		}
+	})
+
+	t.Run("missing token", func(t *testing.T) {
+		req := &CreateSessionWithTokenRequest{
+			SessionID: "tmss-01kct9ns8he7a9m022x0tgbhds",
+			UserID:    "user123",
+			Token:     "",
+		}
+
+		_, err := svc.CreateWithToken(ctx, req)
+		if err == nil {
+			t.Error("Expected error for missing token")
+		}
+	})
+
+	t.Run("invalid session_id format", func(t *testing.T) {
+		req := &CreateSessionWithTokenRequest{
+			SessionID: "invalid-session-id",
+			UserID:    "user123",
+			Token:     "tmtk_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq",
+		}
+
+		_, err := svc.CreateWithToken(ctx, req)
+		if err == nil {
+			t.Error("Expected error for invalid session_id format")
+		}
+	})
+
+	t.Run("invalid token format", func(t *testing.T) {
+		req := &CreateSessionWithTokenRequest{
+			SessionID: "tmss-01kct9ns8he7a9m022x0tgbhds",
+			UserID:    "user123",
+			Token:     "invalid-token",
+		}
+
+		_, err := svc.CreateWithToken(ctx, req)
+		if err == nil {
+			t.Error("Expected error for invalid token format")
+		}
+	})
+}
+
+// TestSessionService_CreateWithID tests session creation with client-provided ID.
+func TestSessionService_CreateWithID(t *testing.T) {
+	repo := newMockSessionRepo()
+	tokenSvc := NewTokenService(newMockTokenRepo(), nil)
+	svc := NewSessionService(repo, tokenSvc)
+
+	ctx := context.Background()
+
+	t.Run("successful creation with ID", func(t *testing.T) {
+		sessionID := "tmss-01kct9ns8he7a9m022x0tgbhds"
+
+		req := &CreateSessionWithIDRequest{
+			SessionID: sessionID,
+			UserID:    "user123",
+			DeviceID:  "device001",
+			TTL:       time.Hour,
+		}
+
+		resp, err := svc.CreateWithID(ctx, req)
+		if err != nil {
+			t.Fatalf("CreateWithID failed: %v", err)
+		}
+
+		if resp.SessionID != sessionID {
+			t.Errorf("SessionID = %s, want %s", resp.SessionID, sessionID)
+		}
+		if resp.Token == "" {
+			t.Error("Token should be generated")
+		}
+		if !domain.ValidateTokenFormat(resp.Token) {
+			t.Errorf("Generated token has invalid format: %s", resp.Token)
+		}
+	})
+
+	t.Run("missing session_id", func(t *testing.T) {
+		req := &CreateSessionWithIDRequest{
+			SessionID: "",
+			UserID:    "user123",
+		}
+
+		_, err := svc.CreateWithID(ctx, req)
+		if err == nil {
+			t.Error("Expected error for missing session_id")
+		}
+	})
+
+	t.Run("missing user_id", func(t *testing.T) {
+		req := &CreateSessionWithIDRequest{
+			SessionID: "tmss-01kct9ns8he7a9m022x0tgbhds",
+			UserID:    "",
+		}
+
+		_, err := svc.CreateWithID(ctx, req)
+		if err == nil {
+			t.Error("Expected error for missing user_id")
+		}
+	})
+
+	t.Run("invalid session_id format", func(t *testing.T) {
+		req := &CreateSessionWithIDRequest{
+			SessionID: "invalid-session-id",
+			UserID:    "user123",
+		}
+
+		_, err := svc.CreateWithID(ctx, req)
+		if err == nil {
+			t.Error("Expected error for invalid session_id format")
+		}
+	})
+
+	t.Run("duplicate session_id", func(t *testing.T) {
+		sessionID := "tmss-01kct9ns8he7a9m022x0tgbhde"
+
+		req := &CreateSessionWithIDRequest{
+			SessionID: sessionID,
+			UserID:    "user123",
+		}
+
+		// First creation
+		_, err := svc.CreateWithID(ctx, req)
+		if err != nil {
+			t.Fatalf("First CreateWithID failed: %v", err)
+		}
+
+		// Second creation with same ID should fail
+		_, err = svc.CreateWithID(ctx, req)
+		if err == nil {
+			t.Error("Expected error for duplicate session_id")
+		}
+	})
+}
+
+// TestSessionService_Update tests session update.
+func TestSessionService_Update(t *testing.T) {
+	repo := newMockSessionRepo()
+	tokenSvc := NewTokenService(newMockTokenRepo(), nil)
+	svc := NewSessionService(repo, tokenSvc)
+
+	ctx := context.Background()
+
+	// Create a session
+	createResp, err := svc.Create(ctx, &CreateSessionRequest{
+		UserID:   "user123",
+		DeviceID: "device001",
+		TTL:      time.Hour,
+		Data:     map[string]string{"key1": "value1"},
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	t.Run("update device_id", func(t *testing.T) {
+		resp, err := svc.Update(ctx, &UpdateSessionRequest{
+			SessionID: createResp.SessionID,
+			DeviceID:  "device002",
+		})
+		if err != nil {
+			t.Fatalf("Update failed: %v", err)
+		}
+
+		if resp.Session.DeviceID != "device002" {
+			t.Errorf("DeviceID = %s, want device002", resp.Session.DeviceID)
+		}
+	})
+
+	t.Run("update data", func(t *testing.T) {
+		newData := map[string]string{"key2": "value2"}
+		resp, err := svc.Update(ctx, &UpdateSessionRequest{
+			SessionID: createResp.SessionID,
+			Data:      newData,
+		})
+		if err != nil {
+			t.Fatalf("Update failed: %v", err)
+		}
+
+		if resp.Session.Data["key2"] != "value2" {
+			t.Errorf("Data[key2] = %s, want value2", resp.Session.Data["key2"])
+		}
+	})
+
+	t.Run("update TTL", func(t *testing.T) {
+		oldSession, _ := svc.Get(ctx, &GetSessionRequest{SessionID: createResp.SessionID})
+		oldExpiry := oldSession.ExpiresAt
+
+		resp, err := svc.Update(ctx, &UpdateSessionRequest{
+			SessionID: createResp.SessionID,
+			TTL:       2 * time.Hour,
+		})
+		if err != nil {
+			t.Fatalf("Update failed: %v", err)
+		}
+
+		if resp.Session.ExpiresAt <= oldExpiry {
+			t.Error("ExpiresAt should be extended")
+		}
+	})
+
+	t.Run("update non-existent session", func(t *testing.T) {
+		_, err := svc.Update(ctx, &UpdateSessionRequest{
+			SessionID: "non-existent",
+			DeviceID:  "device003",
+		})
+		if err == nil {
+			t.Error("Expected error for non-existent session")
+		}
+	})
+
+	t.Run("missing session_id", func(t *testing.T) {
+		_, err := svc.Update(ctx, &UpdateSessionRequest{
+			SessionID: "",
+		})
+		if err == nil {
+			t.Error("Expected error for missing session_id")
+		}
+	})
+
+	t.Run("update expired session", func(t *testing.T) {
+		// Create a session with very short TTL
+		shortResp, err := svc.Create(ctx, &CreateSessionRequest{
+			UserID: "user_short",
+			TTL:    time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("Create failed: %v", err)
+		}
+
+		// Wait for expiration
+		time.Sleep(5 * time.Millisecond)
+
+		_, err = svc.Update(ctx, &UpdateSessionRequest{
+			SessionID: shortResp.SessionID,
+			DeviceID:  "new_device",
+		})
+		if err == nil {
+			t.Error("Expected error for expired session")
+		}
+	})
+}

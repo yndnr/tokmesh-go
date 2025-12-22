@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yndnr/tokmesh-go/internal/core/domain"
+	"github.com/yndnr/tokmesh-go/internal/core/service"
 	"github.com/yndnr/tokmesh-go/internal/storage/wal"
 )
 
@@ -498,4 +499,155 @@ func TestEngine_Close(t *testing.T) {
 	if len(files) == 0 {
 		t.Error("WAL directory is empty, expected WAL files")
 	}
+}
+
+func TestEngine_ListWithFilter(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = time.Hour
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Create sessions for different users
+	for i := 0; i < 3; i++ {
+		session, _ := domain.NewSession("filter_user_a")
+		session.TokenHash = "filter_a_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+	}
+	for i := 0; i < 2; i++ {
+		session, _ := domain.NewSession("filter_user_b")
+		session.TokenHash = "filter_b_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+	}
+
+	t.Run("list with user filter", func(t *testing.T) {
+		filter := &service.SessionFilter{UserID: "filter_user_a"}
+		sessions, total, err := engine.List(ctx, filter)
+		if err != nil {
+			t.Fatalf("List failed: %v", err)
+		}
+		if total != 3 {
+			t.Errorf("total = %d, want 3", total)
+		}
+		if len(sessions) != 3 {
+			t.Errorf("len(sessions) = %d, want 3", len(sessions))
+		}
+	})
+
+	t.Run("list all", func(t *testing.T) {
+		sessions, total, err := engine.List(ctx, nil)
+		if err != nil {
+			t.Fatalf("List failed: %v", err)
+		}
+		if total != 5 {
+			t.Errorf("total = %d, want 5", total)
+		}
+		if len(sessions) != 5 {
+			t.Errorf("len(sessions) = %d, want 5", len(sessions))
+		}
+	})
+}
+
+func TestEngine_GetSessionByTokenHash(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = time.Hour
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Create a session
+	session, _ := domain.NewSession("tokenhash_user")
+	session.TokenHash = "unique_token_hash_123"
+	session.SetExpiration(time.Hour)
+	engine.Create(ctx, session)
+
+	t.Run("get existing session by token hash", func(t *testing.T) {
+		got, err := engine.GetSessionByTokenHash(ctx, "unique_token_hash_123")
+		if err != nil {
+			t.Fatalf("GetSessionByTokenHash failed: %v", err)
+		}
+		if got.UserID != "tokenhash_user" {
+			t.Errorf("UserID = %s, want tokenhash_user", got.UserID)
+		}
+	})
+
+	t.Run("get non-existent token hash", func(t *testing.T) {
+		_, err := engine.GetSessionByTokenHash(ctx, "non_existent_hash")
+		if err == nil {
+			t.Error("expected error for non-existent token hash")
+		}
+	})
+}
+
+func TestEngine_DeleteExpired(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = time.Hour
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Create long-lived sessions
+	for i := 0; i < 3; i++ {
+		session, _ := domain.NewSession("long_user")
+		session.TokenHash = "long_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+	}
+
+	// Create short-lived sessions (will expire quickly)
+	for i := 0; i < 2; i++ {
+		session, _ := domain.NewSession("short_user")
+		session.TokenHash = "short_" + string(rune('a'+i))
+		session.SetExpiration(time.Millisecond)
+		engine.Create(ctx, session)
+	}
+
+	// Wait for short sessions to expire
+	time.Sleep(5 * time.Millisecond)
+
+	t.Run("delete expired sessions", func(t *testing.T) {
+		deleted, err := engine.DeleteExpired(ctx)
+		if err != nil {
+			t.Fatalf("DeleteExpired failed: %v", err)
+		}
+		if deleted != 2 {
+			t.Errorf("deleted = %d, want 2", deleted)
+		}
+
+		// Verify only long-lived sessions remain
+		count := engine.Count(ctx)
+		if count != 3 {
+			t.Errorf("count after delete = %d, want 3", count)
+		}
+	})
+
+	t.Run("delete expired when none exist", func(t *testing.T) {
+		deleted, err := engine.DeleteExpired(ctx)
+		if err != nil {
+			t.Fatalf("DeleteExpired failed: %v", err)
+		}
+		if deleted != 0 {
+			t.Errorf("deleted = %d, want 0", deleted)
+		}
+	})
 }
