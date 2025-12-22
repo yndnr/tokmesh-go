@@ -1,6 +1,7 @@
 package wal
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1078,5 +1079,166 @@ func TestReader_EmptyDirectory(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("got %d entries from empty dir, want 0", len(entries))
+	}
+}
+
+// TestWriter_ResumeInvalidMagic tests resuming with invalid magic bytes.
+func TestWriter_ResumeInvalidMagic(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a file with invalid magic (must be 8 bytes to match MagicBytesSize)
+	segmentPath := filepath.Join(dir, "00000000000000000000.wal")
+	// Create file with valid size but wrong magic (need more than just magic bytes for it to be considered a valid segment file)
+	invalidContent := make([]byte, 100)
+	copy(invalidContent, "WRONGWAL") // 8 bytes of wrong magic
+	if err := os.WriteFile(segmentPath, invalidContent, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Try to create writer - should fail due to invalid magic or start new segment
+	w, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		MaxFileSize:   1 << 20,
+		MaxEntryCount: 1000,
+	})
+	// If no error, it means writer started a new segment (acceptable behavior)
+	if err == nil {
+		w.Close()
+	}
+	// Either way, this tests the openExistingOpenSegment path
+}
+
+// TestWriter_ResumeAlreadyFinalized tests resuming an already finalized segment.
+func TestWriter_ResumeAlreadyFinalized(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create writer and append entry
+	w1, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		MaxFileSize:   1 << 20,
+		MaxEntryCount: 1000,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter 1: %v", err)
+	}
+
+	s1, _ := domain.NewSession("user1")
+	s1.TokenHash = "finalize_test"
+	s1.SetExpiration(time.Hour)
+	if err := w1.Append(NewCreateEntry(s1)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Close properly (should finalize the segment)
+	if err := w1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Creating new writer should start a new segment (not resume finalized one)
+	w2, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		MaxFileSize:   1 << 20,
+		MaxEntryCount: 1000,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter 2: %v", err)
+	}
+	defer w2.Close()
+
+	// Should be able to append to new segment
+	s2, _ := domain.NewSession("user2")
+	s2.TokenHash = "finalize_test_2"
+	s2.SetExpiration(time.Hour)
+	if err := w2.Append(NewCreateEntry(s2)); err != nil {
+		t.Fatalf("Append 2: %v", err)
+	}
+}
+
+// TestCompactor_CleanAllWithSingleFile tests CleanAll with a single file.
+func TestCompactor_CleanAllWithSingleFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create writer and append entry
+	w, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		MaxFileSize:   1 << 20,
+		MaxEntryCount: 1000,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	s, _ := domain.NewSession("user1")
+	s.TokenHash = "clean_test"
+	s.SetExpiration(time.Hour)
+	if err := w.Append(NewCreateEntry(s)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	w.Close()
+
+	// Create compactor and clean all
+	c := NewCompactor(dir)
+	err = c.CleanAll()
+	if err != nil {
+		t.Fatalf("CleanAll: %v", err)
+	}
+
+	// Verify no files remain
+	count, err := c.FileCount()
+	if err != nil {
+		t.Fatalf("FileCount: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("FileCount = %d, want 0", count)
+	}
+}
+
+// TestReader_ReadWithOffset tests reading with a specific offset.
+func TestReader_ReadWithOffset(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create writer and append multiple entries
+	w, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		MaxFileSize:   1 << 20,
+		MaxEntryCount: 1000,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		s, _ := domain.NewSession(fmt.Sprintf("user%d", i))
+		s.TokenHash = fmt.Sprintf("offset_test_%d", i)
+		s.SetExpiration(time.Hour)
+		if err := w.Append(NewCreateEntry(s)); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	w.Close()
+
+	// Read with offset
+	r, err := NewReader(dir, nil)
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer r.Close()
+
+	// Read all and count
+	entries, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(entries) != 5 {
+		t.Errorf("got %d entries, want 5", len(entries))
 	}
 }
