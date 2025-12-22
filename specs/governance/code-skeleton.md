@@ -80,9 +80,9 @@ src/
 │   │   │   ├── server.go            # 集群通信 Handler 实现
 │   │   │   └── interceptor.go       # mTLS 验证, 日志
 │   │   │
-│   │   ├── localserver/             # 对内 UDS 紧急管理通道
+│   │   ├── localserver/             # 对内 UDS 本地 socket 管理通道
 │   │   │   ├── server.go            # Unix Socket / Named Pipe Listener
-│   │   │   └── handler.go           # 紧急指令处理 (无需 API Key)
+│   │   │   └── handler.go           # 本地指令处理 (无需 API Key)
 │   │   │
 │   │   └── config/                  # Server 业务配置定义
 │   │       ├── spec.go              # type ServerConfig struct
@@ -256,7 +256,7 @@ graph TD
 | `httpserver/` | 对外 HTTP/HTTPS 服务（stdlib net/http） |
 | `redisserver/` | 对外 Redis 协议兼容服务（RESP） |
 | `clusterserver/` | 集群内部互联（Connect + Protobuf / Raft / Gossip） |
-| `localserver/` | 对内 UDS 紧急管理通道 |
+| `localserver/` | 对内 UDS 本地 socket 管理通道 |
 | `config/` | 服务端配置结构定义与验证 |
 
 **HTTP 路由前缀策略（强制，避免漂移）**：

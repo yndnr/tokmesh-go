@@ -189,7 +189,7 @@ TokMesh 专注于**会话状态管理与令牌校验**这一垂直领域，而�
 - **安全功能**:
   - TLS 加密通信 + **证书热加载 (Hot Reload)**。
   - API Key 增强 (Argon2 参数调优、过期时间、长期 Key 警告)。
-  - 本地紧急管理接口 (UDS/Named Pipe)。
+  - 本地 socket 管理接口 (UDS/Named Pipe)。
 - **可观测性**:
   - Prometheus Metrics (含业务与性能指标)。
   - Tracing（P2 可选；默认关闭）。

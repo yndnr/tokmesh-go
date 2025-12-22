@@ -10,8 +10,8 @@
 
 ## 可执行程序
 
-- `tokmesh-server`：服务端进程（对外提供 HTTP/HTTPS；并在本地提供紧急管理 Socket/Named Pipe）
-- `tokmesh-cli`：客户端/管理端进程（通过 HTTP(S) 或本地紧急通道连接 `tokmesh-server`）
+- `tokmesh-server`：服务端进程（对外提供 HTTP/HTTPS；并在本地提供管理用 Socket/Named Pipe）
+- `tokmesh-cli`：客户端/管理端进程（通过 HTTP(S) 或本地 socket 连接 `tokmesh-server`）
 
 ## 项目结构
 

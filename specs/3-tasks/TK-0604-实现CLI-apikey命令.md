@@ -22,7 +22,7 @@
 ```
 tokmesh-cli apikey (别名: key)
 ├── create            # 创建新的 API Key
-├── create-emergency  # 通过 localserver 创建紧急 Admin Key
+├── create-emergency  # 通过 localserver 本地 socket 创建 Admin Key (无需已有 API Key)
 ├── list              # 列出所有 API Key
 ├── disable <id>      # 禁用 API Key
 ├── enable <id>       # 启用 API Key
@@ -319,7 +319,7 @@ WARNING: This key was created via emergency channel.
 | Key 不存在 | `TM-ADMIN-4041` | API Key 'tmak-xxx' not found |
 | 权限不足 | `TM-ADMIN-4030` | Admin role required |
 
-> **注意**: 禁用最后一个 Admin Key 是允许的，CLI 会显示警告提示用户可通过 `localserver` 紧急恢复。
+> **注意**: 禁用最后一个 Admin Key 是允许的，CLI 会显示警告提示用户可通过 `localserver` 本地 socket 恢复。
 
 ## 5. 安全考虑
 
@@ -341,7 +341,7 @@ security.auth.allow_list configured, both must match (intersection).
 
 ### 6.1 功能验收
 - [ ] `apikey create` 创建成功并返回 Secret
-- [ ] `apikey create-emergency` 通过 localserver 创建紧急 Key
+- [ ] `apikey create-emergency` 通过 localserver 本地 socket 创建 Admin Key
 - [ ] `apikey list` 列出所有 Key
 - [ ] `apikey disable` 禁用 Key（包括最后一个 Admin Key，显示警告）
 - [ ] `apikey enable` 启用 Key
@@ -365,7 +365,7 @@ security.auth.allow_list configured, both must match (intersection).
 2. `apikey create` - 创建 Key
 3. `apikey disable` / `apikey enable` - 状态管理
 4. `apikey rotate` - Secret 轮转
-5. `apikey create-emergency` - 紧急恢复（依赖 localserver 连接实现）
+5. `apikey create-emergency` - 本地 socket 恢复（依赖 localserver 连接实现）
 
 ---
 

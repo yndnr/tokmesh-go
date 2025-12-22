@@ -5,7 +5,7 @@
 //   - HTTP/HTTPS API for session and token management
 //   - Redis-compatible protocol for high-performance access
 //   - Cluster communication for distributed deployments
-//   - Local Unix socket for emergency management
+//   - Local Unix socket for management access (no API key required)
 //
 // Usage:
 //

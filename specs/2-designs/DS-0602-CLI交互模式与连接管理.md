@@ -365,7 +365,7 @@ const (
 )
 
 func ParseTarget(target string, apiKey string) (*Target, error) {
-    // 1. 检查是否为 "local" - 本地紧急管理接口（tokmesh-server 暴露的本地 Socket/Named Pipe）
+    // 1. 检查是否为 "local" - 本地 socket 管理接口（tokmesh-server 暴露的本地 Socket/Named Pipe）
     if target == "local" {
         return &Target{
             Type:    TargetSocket,
@@ -827,7 +827,7 @@ var connectCmd = &cli.Command{
     Usage:     "Connect to a TokMesh node",
     ArgsUsage: "<target>",
     Description: `Target formats:
-  local                    Connect via local socket (tokmesh-server emergency channel)
+  local                    Connect via local socket (tokmesh-server local management)
   socket:/path/to/sock     Connect via specified socket path
   http://host:port         Connect via HTTP
   https://host:port        Connect via HTTPS
@@ -1003,7 +1003,7 @@ Unlike 'connect', 'use' only accepts aliases defined in the config file.`,
 
 - [ ] 无参数启动进入交互模式
 - [ ] `-t <target> <command>` 使用直接模式
-- [ ] `connect local` 成功连接本地紧急管理通道（由 `tokmesh-server` 暴露的 UDS/Named Pipe）
+- [ ] `connect local` 成功连接本地 socket 管理通道（由 `tokmesh-server` 暴露的 UDS/Named Pipe）
 - [ ] `connect <url> -k <key>` 成功连接远程节点
 - [ ] 未提供 API Key 时交互式提示输入
 - [ ] `disconnect` 正确断开连接
