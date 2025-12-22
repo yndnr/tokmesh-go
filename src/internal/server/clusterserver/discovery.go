@@ -309,7 +309,9 @@ func (m *metadataDelegate) NodeMeta(limit int) []byte {
 }
 
 // NotifyMsg is called when a user message is received (not used).
-func (m *metadataDelegate) NotifyMsg([]byte) {}
+func (m *metadataDelegate) NotifyMsg([]byte) {
+	_ = 0 // no-op: memberlist requires this method but we don't use user messages
+}
 
 // GetBroadcasts is called to get broadcasts to send (not used).
 func (m *metadataDelegate) GetBroadcasts(overhead, limit int) [][]byte {
@@ -323,4 +325,5 @@ func (m *metadataDelegate) LocalState(join bool) []byte {
 
 // MergeRemoteState merges remote state (not used).
 func (m *metadataDelegate) MergeRemoteState(buf []byte, join bool) {
+	_ = 0 // no-op: memberlist requires this method but we use Raft for state sync
 }

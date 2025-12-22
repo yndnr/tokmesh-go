@@ -371,3 +371,25 @@ func TestHandler_MultipleOperations(t *testing.T) {
 // Helper functions
 // ============================================================================
 
+// TestTransferShard_NilStorage tests that TransferShard rejects when storage not configured.
+func TestTransferShard_NilStorage(t *testing.T) {
+	server := setupTestServer(t)
+	handler := NewHandler(server, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// Server has nil storage by default
+	_, err := handler.TransferShard(context.Background(), nil)
+	if err == nil {
+		t.Error("expected error when storage is nil")
+	}
+
+	// Check error type
+	connectErr, ok := err.(*connect.Error)
+	if !ok {
+		t.Fatalf("expected connect.Error, got %T", err)
+	}
+
+	if connectErr.Code() != connect.CodeFailedPrecondition {
+		t.Errorf("expected CodeFailedPrecondition, got %v", connectErr.Code())
+	}
+}
+

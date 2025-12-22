@@ -352,7 +352,7 @@ func (l *raftHCLogger) Named(name string) hclog.Logger {
 func (l *raftHCLogger) ResetNamed(name string) hclog.Logger {
 	return l // Simplified: return same logger
 }
-func (l *raftHCLogger) SetLevel(level hclog.Level) {}
+func (l *raftHCLogger) SetLevel(level hclog.Level) { _ = 0 }
 func (l *raftHCLogger) GetLevel() hclog.Level       { return hclog.Info }
 func (l *raftHCLogger) StandardLogger(opts *hclog.StandardLoggerOptions) *log.Logger {
 	return nil

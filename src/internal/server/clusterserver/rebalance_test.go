@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -448,3 +449,265 @@ func TestRebalanceManager_GetTasks(t *testing.T) {
 		t.Error("Expected task 99 to not exist")
 	}
 }
+
+// TestRebalanceManager_UpdateTaskError tests the updateTaskError method.
+func TestRebalanceManager_UpdateTaskError(t *testing.T) {
+	cfg := DefaultRebalanceConfig()
+	manager := NewRebalanceManager(cfg, nil, nil)
+
+	// Create a task
+	task := &TransferTask{
+		ShardID:    5,
+		TargetNode: "node-2",
+		TargetAddr: "192.168.1.2:5343",
+		Status:     TaskStatusRunning,
+		startTime:  time.Now(),
+	}
+
+	// Update task with error
+	manager.updateTaskError(task, "connection failed")
+
+	// Verify status updated
+	task.mu.RLock()
+	defer task.mu.RUnlock()
+
+	if task.Status != TaskStatusFailed {
+		t.Errorf("Expected status=Failed, got %s", task.Status)
+	}
+
+	if task.Progress.LastError != "connection failed" {
+		t.Errorf("Expected LastError='connection failed', got %q", task.Progress.LastError)
+	}
+
+	if task.endTime.IsZero() {
+		t.Error("Expected endTime to be set")
+	}
+}
+
+// TestTransferTask_StatusTransitions tests task status transitions.
+func TestTransferTask_StatusTransitions(t *testing.T) {
+	task := &TransferTask{
+		ShardID:    10,
+		TargetNode: "node-3",
+		Status:     TaskStatusPending,
+	}
+
+	// Pending -> Running
+	task.mu.Lock()
+	task.Status = TaskStatusRunning
+	task.startTime = time.Now()
+	task.mu.Unlock()
+
+	task.mu.RLock()
+	if task.Status != TaskStatusRunning {
+		t.Errorf("Expected Running, got %s", task.Status)
+	}
+	task.mu.RUnlock()
+
+	// Running -> Failed
+	task.mu.Lock()
+	task.Status = TaskStatusFailed
+	task.endTime = time.Now()
+	task.Progress.LastError = "timeout"
+	task.mu.Unlock()
+
+	task.mu.RLock()
+	if task.Status != TaskStatusFailed {
+		t.Errorf("Expected Failed, got %s", task.Status)
+	}
+	if task.Progress.LastError != "timeout" {
+		t.Errorf("Expected error 'timeout', got %q", task.Progress.LastError)
+	}
+	task.mu.RUnlock()
+}
+
+// TestRebalanceManager_ConcurrentTaskAccess tests concurrent access to tasks.
+func TestRebalanceManager_ConcurrentTaskAccess(t *testing.T) {
+	cfg := DefaultRebalanceConfig()
+	manager := NewRebalanceManager(cfg, nil, nil)
+
+	// Add multiple tasks
+	manager.mu.Lock()
+	for i := uint32(0); i < 10; i++ {
+		manager.tasks[i] = &TransferTask{
+			ShardID:    i,
+			TargetNode: fmt.Sprintf("node-%d", i),
+			Status:     TaskStatusPending,
+		}
+	}
+	manager.mu.Unlock()
+
+	// Concurrent reads
+	done := make(chan bool, 100)
+	for i := 0; i < 100; i++ {
+		go func(id int) {
+			tasks := manager.GetAllTasks()
+			_ = len(tasks)
+
+			_, _ = manager.GetTaskStatus(uint32(id % 10))
+			_ = manager.IsRunning()
+			done <- true
+		}(i)
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < 100; i++ {
+		<-done
+	}
+}
+
+// TestTaskProgress_Fields tests TaskProgress field access.
+func TestTaskProgress_Fields(t *testing.T) {
+	progress := TaskProgress{
+		TotalItems:       1000,
+		TransferredItems: 500,
+		BytesTransferred: 1024 * 1024 * 5, // 5MB
+		SkippedExpired:   50,
+		LastError:        "",
+	}
+
+	if progress.TotalItems != 1000 {
+		t.Errorf("Expected TotalItems=1000, got %d", progress.TotalItems)
+	}
+
+	if progress.TransferredItems != 500 {
+		t.Errorf("Expected TransferredItems=500, got %d", progress.TransferredItems)
+	}
+
+	if progress.BytesTransferred != 5*1024*1024 {
+		t.Errorf("Expected BytesTransferred=5MB, got %d", progress.BytesTransferred)
+	}
+
+	if progress.SkippedExpired != 50 {
+		t.Errorf("Expected SkippedExpired=50, got %d", progress.SkippedExpired)
+	}
+
+	// Update with error
+	progress.LastError = "network error"
+	if progress.LastError != "network error" {
+		t.Errorf("Expected LastError='network error', got %q", progress.LastError)
+	}
+}
+
+// TestCleanupShardData_NilStorage tests cleanupShardData with nil storage.
+func TestCleanupShardData_NilStorage(t *testing.T) {
+	cfg := DefaultRebalanceConfig()
+	manager := NewRebalanceManager(cfg, nil, nil)
+
+	err := manager.cleanupShardData(context.Background(), 0)
+	if err == nil {
+		t.Error("expected error for nil storage")
+	}
+	if err.Error() != "storage not configured" {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestTriggerRebalance_AlreadyRunning tests that concurrent rebalancing is blocked.
+func TestTriggerRebalance_AlreadyRunning(t *testing.T) {
+	cfg := DefaultRebalanceConfig()
+	manager := NewRebalanceManager(cfg, nil, nil)
+
+	// Simulate running state
+	manager.running.Store(true)
+
+	oldMap := NewShardMap()
+	newMap := NewShardMap()
+	newMap.AssignShard(0, "node2", nil)
+
+	err := manager.TriggerRebalance(context.Background(), oldMap, newMap)
+	if err == nil {
+		t.Error("expected error when rebalance already running")
+	}
+	if err.Error() != "rebalance already in progress" {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestTriggerRebalance_NoMigrations tests TriggerRebalance when no migrations needed.
+func TestTriggerRebalance_NoMigrations(t *testing.T) {
+	cfg := DefaultRebalanceConfig()
+	manager := NewRebalanceManager(cfg, nil, nil)
+
+	// Same maps - no migrations needed
+	oldMap := NewShardMap()
+	oldMap.AssignShard(0, "node1", nil)
+	oldMap.AssignShard(1, "node1", nil)
+
+	newMap := NewShardMap()
+	newMap.AssignShard(0, "node1", nil) // Same owner
+	newMap.AssignShard(1, "node1", nil) // Same owner
+
+	err := manager.TriggerRebalance(context.Background(), oldMap, newMap)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Verify running flag was properly reset
+	if manager.running.Load() {
+		t.Error("running flag should be reset after TriggerRebalance")
+	}
+}
+
+// TestMigrateShardData_TaskNotFound tests migrateShardData with non-existent task.
+func TestMigrateShardData_TaskNotFound(t *testing.T) {
+	cfg := DefaultRebalanceConfig()
+	manager := NewRebalanceManager(cfg, nil, nil)
+
+	// No task registered for shard 999
+	err := manager.migrateShardData(context.Background(), 999)
+	if err == nil {
+		t.Error("expected error for non-existent task")
+	}
+	if err.Error() != "task not found for shard 999" {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestMigrateShardData_ClientError tests migrateShardData when client creation fails.
+func TestMigrateShardData_ClientError(t *testing.T) {
+	cfg := DefaultRebalanceConfig()
+
+	// Client factory that returns error
+	clientFactory := func(addr string) (clusterv1connect.ClusterServiceClient, error) {
+		return nil, errors.New("connection refused")
+	}
+
+	manager := NewRebalanceManager(cfg, nil, clientFactory)
+
+	// Register a task first
+	manager.mu.Lock()
+	manager.tasks[0] = &TransferTask{
+		ShardID:    0,
+		TargetNode: "node2",
+		TargetAddr: "127.0.0.1:5000",
+		Status:     TaskStatusPending,
+		startTime:  time.Now(),
+	}
+	manager.mu.Unlock()
+
+	err := manager.migrateShardData(context.Background(), 0)
+	if err == nil {
+		t.Error("expected error when client creation fails")
+	}
+	if !errors.Is(err, errors.New("create client: connection refused")) && err.Error() != "create client: connection refused" {
+		// Check that error message contains expected text
+		if err.Error() != "create client: connection refused" {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+
+	// Task status should be failed
+	manager.mu.RLock()
+	task := manager.tasks[0]
+	manager.mu.RUnlock()
+
+	task.mu.RLock()
+	status := task.Status
+	task.mu.RUnlock()
+
+	if status != TaskStatusFailed {
+		t.Errorf("expected task status Failed, got %v", status)
+	}
+}
+

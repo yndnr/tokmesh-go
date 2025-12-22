@@ -328,5 +328,5 @@ func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 
 // Release is called when the snapshot is no longer needed.
 func (s *fsmSnapshot) Release() {
-	// No resources to release
+	_ = 0 // no-op: no resources to release
 }

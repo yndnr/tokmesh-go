@@ -307,6 +307,96 @@ func TestApply_InvalidPayload(t *testing.T) {
 	}
 }
 
+func TestApply_ShardMapUpdate_InvalidPayload(t *testing.T) {
+	fsm := NewFSM(nil)
+
+	// Create log entry with invalid JSON payload for ShardMapUpdate
+	// We need to construct the data manually since mustMarshalJSON validates JSON
+	invalidData := []byte(`{"type":1,"payload":"invalid json"}`) // payload is string, not JSON object
+
+	// Create Raft log
+	raftLog := &raft.Log{
+		Index: 1,
+		Term:  1,
+		Type:  raft.LogCommand,
+		Data:  invalidData,
+	}
+
+	// Apply should panic for invalid payload
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Apply should panic for invalid ShardMapUpdate payload")
+		} else {
+			msg := fmt.Sprint(r)
+			if !strings.Contains(msg, "applyShardMapUpdate") {
+				t.Errorf("panic message should mention applyShardMapUpdate, got: %v", r)
+			}
+		}
+	}()
+
+	fsm.Apply(raftLog)
+}
+
+func TestApply_MemberJoin_InvalidPayload(t *testing.T) {
+	fsm := NewFSM(nil)
+
+	// Create log entry with invalid JSON payload for MemberJoin
+	// type 2 is LogEntryMemberJoin
+	invalidData := []byte(`{"type":2,"payload":"invalid json"}`)
+
+	// Create Raft log
+	raftLog := &raft.Log{
+		Index: 1,
+		Term:  1,
+		Type:  raft.LogCommand,
+		Data:  invalidData,
+	}
+
+	// Apply should panic for invalid payload
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Apply should panic for invalid MemberJoin payload")
+		} else {
+			msg := fmt.Sprint(r)
+			if !strings.Contains(msg, "applyMemberJoin") {
+				t.Errorf("panic message should mention applyMemberJoin, got: %v", r)
+			}
+		}
+	}()
+
+	fsm.Apply(raftLog)
+}
+
+func TestApply_MemberLeave_InvalidPayload(t *testing.T) {
+	fsm := NewFSM(nil)
+
+	// Create log entry with invalid JSON payload for MemberLeave
+	// type 3 is LogEntryMemberLeave
+	invalidData := []byte(`{"type":3,"payload":"invalid json"}`)
+
+	// Create Raft log
+	raftLog := &raft.Log{
+		Index: 1,
+		Term:  1,
+		Type:  raft.LogCommand,
+		Data:  invalidData,
+	}
+
+	// Apply should panic for invalid payload
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Apply should panic for invalid MemberLeave payload")
+		} else {
+			msg := fmt.Sprint(r)
+			if !strings.Contains(msg, "applyMemberLeave") {
+				t.Errorf("panic message should mention applyMemberLeave, got: %v", r)
+			}
+		}
+	}()
+
+	fsm.Apply(raftLog)
+}
+
 func TestSnapshot(t *testing.T) {
 	fsm := NewFSM(nil)
 
@@ -435,13 +525,30 @@ func TestRestore(t *testing.T) {
 func TestRestore_InvalidJSON(t *testing.T) {
 	fsm := NewFSM(nil)
 
-	// Create invalid snapshot data
+	// Create invalid snapshot data (not valid gzip)
 	buf := bytes.NewBufferString("invalid json")
 
-	// Restore should fail
+	// Restore should fail - gzip.NewReader will fail since this isn't gzip data
 	err := fsm.Restore(io.NopCloser(buf))
 	if err == nil {
-		t.Error("Restore should fail with invalid JSON")
+		t.Error("Restore should fail with invalid data")
+	}
+}
+
+// TestRestore_InvalidGzipJSON tests Restore with valid gzip but invalid JSON.
+func TestRestore_InvalidGzipJSON(t *testing.T) {
+	fsm := NewFSM(nil)
+
+	// Create gzip-compressed invalid JSON
+	var buf bytes.Buffer
+	gzWriter := gzip.NewWriter(&buf)
+	gzWriter.Write([]byte("not valid json at all {{{"))
+	gzWriter.Close()
+
+	// Restore should fail at JSON decode stage
+	err := fsm.Restore(io.NopCloser(&buf))
+	if err == nil {
+		t.Error("Restore should fail with invalid JSON in gzip")
 	}
 }
 

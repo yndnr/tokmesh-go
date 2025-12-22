@@ -435,3 +435,184 @@ func TestDiscovery_LocalNodeNil(t *testing.T) {
 		t.Fatal("LocalNode should not be nil")
 	}
 }
+
+// TestNotifyJoin_InvalidMetadata tests NotifyJoin with invalid metadata JSON.
+func TestNotifyJoin_InvalidMetadata(t *testing.T) {
+	cfg := DiscoveryConfig{
+		NodeID:   "test-invalid-meta",
+		BindAddr: "127.0.0.1",
+		BindPort: 0,
+		RaftAddr: "127.0.0.1:7070",
+		Logger:   slog.New(slog.NewTextHandler(os.Stdout, nil)),
+	}
+
+	discovery, err := NewDiscovery(cfg)
+	if err != nil {
+		t.Fatalf("NewDiscovery failed: %v", err)
+	}
+	defer discovery.Shutdown()
+
+	// Track if callback was called
+	callbackCalled := false
+	discovery.OnJoin(func(nodeID, addr string) {
+		callbackCalled = true
+	})
+
+	// Get event delegate
+	delegate, ok := discovery.config.Events.(*eventDelegate)
+	if !ok {
+		t.Fatal("expected eventDelegate")
+	}
+
+	// Create node with invalid metadata
+	mockNode := &memberlist.Node{
+		Name: "invalid-meta-node",
+		Addr: []byte{127, 0, 0, 1},
+		Port: 8000,
+		Meta: []byte("invalid json"), // Invalid JSON
+	}
+
+	// NotifyJoin should not panic and should not call callback
+	delegate.NotifyJoin(mockNode)
+
+	if callbackCalled {
+		t.Error("callback should not be called for node with invalid metadata")
+	}
+}
+
+// TestNotifyJoin_ClusterIDMismatch tests NotifyJoin with cluster ID mismatch.
+func TestNotifyJoin_ClusterIDMismatch(t *testing.T) {
+	cfg := DiscoveryConfig{
+		NodeID:    "test-cluster-mismatch",
+		BindAddr:  "127.0.0.1",
+		BindPort:  0,
+		RaftAddr:  "127.0.0.1:7071",
+		ClusterID: "cluster-A", // Set cluster ID
+		Logger:    slog.New(slog.NewTextHandler(os.Stdout, nil)),
+	}
+
+	discovery, err := NewDiscovery(cfg)
+	if err != nil {
+		t.Fatalf("NewDiscovery failed: %v", err)
+	}
+	defer discovery.Shutdown()
+
+	// Track if callback was called
+	callbackCalled := false
+	discovery.OnJoin(func(nodeID, addr string) {
+		callbackCalled = true
+	})
+
+	// Get event delegate
+	delegate, ok := discovery.config.Events.(*eventDelegate)
+	if !ok {
+		t.Fatal("expected eventDelegate")
+	}
+
+	// Create node with different cluster ID
+	metadata := nodeMetadata{
+		RaftAddr:  "127.0.0.1:9000",
+		ClusterID: "cluster-B", // Different cluster ID
+	}
+	metaBytes, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("failed to marshal metadata: %v", err)
+	}
+
+	mockNode := &memberlist.Node{
+		Name: "wrong-cluster-node",
+		Addr: []byte{127, 0, 0, 1},
+		Port: 8000,
+		Meta: metaBytes,
+	}
+
+	// NotifyJoin should not panic and should not call callback
+	delegate.NotifyJoin(mockNode)
+
+	if callbackCalled {
+		t.Error("callback should not be called for node with cluster ID mismatch")
+	}
+}
+
+// TestNotifyJoin_EmptyRaftAddr tests NotifyJoin when node has empty Raft address.
+func TestNotifyJoin_EmptyRaftAddr(t *testing.T) {
+	cfg := DiscoveryConfig{
+		NodeID:   "test-empty-raft",
+		BindAddr: "127.0.0.1",
+		BindPort: 0,
+		RaftAddr: "127.0.0.1:7072",
+		Logger:   slog.New(slog.NewTextHandler(os.Stdout, nil)),
+	}
+
+	discovery, err := NewDiscovery(cfg)
+	if err != nil {
+		t.Fatalf("NewDiscovery failed: %v", err)
+	}
+	defer discovery.Shutdown()
+
+	// Track callback address
+	var receivedAddr string
+	discovery.OnJoin(func(nodeID, addr string) {
+		receivedAddr = addr
+	})
+
+	// Get event delegate
+	delegate, ok := discovery.config.Events.(*eventDelegate)
+	if !ok {
+		t.Fatal("expected eventDelegate")
+	}
+
+	// Create node with empty Raft address (should fallback to gossip address)
+	metadata := nodeMetadata{
+		RaftAddr:  "", // Empty - should fallback to gossip address
+		ClusterID: "",
+	}
+	metaBytes, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("failed to marshal metadata: %v", err)
+	}
+
+	mockNode := &memberlist.Node{
+		Name: "empty-raft-node",
+		Addr: []byte{127, 0, 0, 1},
+		Port: 8000,
+		Meta: metaBytes,
+	}
+
+	delegate.NotifyJoin(mockNode)
+
+	// Should receive gossip address as fallback
+	expectedAddr := "127.0.0.1:8000"
+	if receivedAddr != expectedAddr {
+		t.Errorf("expected addr %q, got %q", expectedAddr, receivedAddr)
+	}
+}
+
+// TestDiscovery_NilMemberlist tests methods when memberlist is nil.
+func TestDiscovery_NilMemberlist(t *testing.T) {
+	// Create a Discovery instance with nil memberlist
+	discovery := &Discovery{
+		logger: slog.Default(),
+	}
+
+	t.Run("Members", func(t *testing.T) {
+		members := discovery.Members()
+		if members != nil {
+			t.Error("Members should return nil when memberlist is nil")
+		}
+	})
+
+	t.Run("Leave", func(t *testing.T) {
+		err := discovery.Leave()
+		if err != nil {
+			t.Errorf("Leave should return nil when memberlist is nil: %v", err)
+		}
+	})
+
+	t.Run("LocalNode", func(t *testing.T) {
+		node := discovery.LocalNode()
+		if node != nil {
+			t.Error("LocalNode should return nil when memberlist is nil")
+		}
+	})
+}
