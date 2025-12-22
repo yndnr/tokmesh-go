@@ -40,6 +40,9 @@ GEMINI.md
 # Patents (local only)
 patents/
 
+# Audit reports (local only)
+specs/audits/
+
 # OS
 .DS_Store
 
