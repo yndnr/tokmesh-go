@@ -419,6 +419,25 @@ func TestRecoveryInterceptor_WrapStreamingHandler_WithPanic(t *testing.T) {
 	}
 }
 
+func TestRecoveryInterceptor_WrapStreamingClient(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	interceptor := NewRecoveryInterceptor(logger)
+
+	called := false
+	next := func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		called = true
+		return nil
+	}
+
+	wrapped := interceptor.WrapStreamingClient(next)
+	_ = wrapped(context.Background(), connect.Spec{})
+
+	// WrapStreamingClient is a no-op on server side
+	if !called {
+		t.Error("expected next to be called")
+	}
+}
+
 func TestDefaultInterceptors(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	interceptors := DefaultInterceptors(logger)
@@ -631,4 +650,453 @@ func mockTLSContext(cert *x509.Certificate) context.Context {
 		PeerCertificates: []*x509.Certificate{cert},
 	}
 	return context.WithValue(context.Background(), "tls.ConnectionState", state)
+}
+
+// ============================================================================
+// Additional Tests for Coverage
+// ============================================================================
+
+// TestLoggingInterceptor_WrapStreamingHandler tests streaming handler logging.
+func TestLoggingInterceptor_WrapStreamingHandler(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	interceptor := NewLoggingInterceptor(logger)
+
+	t.Run("Success", func(t *testing.T) {
+		called := false
+		next := func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+			called = true
+			return nil
+		}
+
+		wrapped := interceptor.WrapStreamingHandler(next)
+
+		conn := &mockStreamingHandlerConn{
+			spec: connect.Spec{Procedure: "test.Service/StreamMethod"},
+			peer: connect.Peer{Addr: "127.0.0.1:5000"},
+		}
+
+		err := wrapped(context.Background(), conn)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if !called {
+			t.Error("expected next handler to be called")
+		}
+	})
+
+	t.Run("Error", func(t *testing.T) {
+		expectedErr := errors.New("stream error")
+		next := func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+			return expectedErr
+		}
+
+		wrapped := interceptor.WrapStreamingHandler(next)
+
+		conn := &mockStreamingHandlerConn{
+			spec: connect.Spec{Procedure: "test.Service/StreamMethod"},
+			peer: connect.Peer{Addr: "127.0.0.1:5000"},
+		}
+
+		err := wrapped(context.Background(), conn)
+		if err != expectedErr {
+			t.Errorf("expected error %v, got %v", expectedErr, err)
+		}
+	})
+}
+
+// TestAuthInterceptor_WrapStreamingClient tests streaming client auth.
+func TestAuthInterceptor_WrapStreamingClient(t *testing.T) {
+	cfg := AuthConfig{
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	interceptor := NewAuthInterceptor(cfg)
+
+	called := false
+	next := func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		called = true
+		return nil
+	}
+
+	wrapped := interceptor.WrapStreamingClient(next)
+	_ = wrapped(context.Background(), connect.Spec{})
+
+	// WrapStreamingClient is a no-op on server side
+	if !called {
+		t.Error("expected next to be called")
+	}
+}
+
+// TestAuthInterceptor_WrapStreamingHandler tests streaming handler auth.
+func TestAuthInterceptor_WrapStreamingHandler(t *testing.T) {
+	t.Run("NoCAPool", func(t *testing.T) {
+		cfg := AuthConfig{
+			ClientCAPool: nil, // Dev mode
+			Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+
+		interceptor := NewAuthInterceptor(cfg)
+
+		next := func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+			return nil
+		}
+
+		wrapped := interceptor.WrapStreamingHandler(next)
+
+		conn := &mockStreamingHandlerConn{
+			spec: connect.Spec{Procedure: "test.Service/StreamMethod"},
+			peer: connect.Peer{Addr: "127.0.0.1:5000"},
+		}
+
+		err := wrapped(context.Background(), conn)
+		if err != nil {
+			t.Errorf("expected no error in dev mode, got: %v", err)
+		}
+	})
+
+	t.Run("WithCAPool_NoCert", func(t *testing.T) {
+		caPool := x509.NewCertPool()
+
+		cfg := AuthConfig{
+			ClientCAPool: caPool,
+			Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+
+		interceptor := NewAuthInterceptor(cfg)
+
+		next := func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+			return nil
+		}
+
+		wrapped := interceptor.WrapStreamingHandler(next)
+
+		conn := &mockStreamingHandlerConn{
+			spec: connect.Spec{Procedure: "test.Service/StreamMethod"},
+			peer: connect.Peer{Addr: "127.0.0.1:5000"},
+		}
+
+		err := wrapped(context.Background(), conn)
+		if err == nil {
+			t.Error("expected authentication to fail without TLS info")
+		}
+
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			if connectErr.Code() != connect.CodeUnauthenticated {
+				t.Errorf("expected CodeUnauthenticated, got: %v", connectErr.Code())
+			}
+		}
+	})
+}
+
+// TestAuthInterceptor_Authenticate tests authenticate method paths.
+func TestAuthInterceptor_Authenticate(t *testing.T) {
+	t.Run("TLSInfoFromContext", func(t *testing.T) {
+		// Generate CA and client cert
+		ca, caPriv := generateTestCA(t)
+		clientCert := generateTestClientCert(t, ca, caPriv, "test-node")
+
+		// Create CA pool
+		caPool := x509.NewCertPool()
+		caPool.AddCert(ca)
+
+		cfg := AuthConfig{
+			ClientCAPool: caPool,
+			Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+
+		interceptor := NewAuthInterceptor(cfg)
+
+		// Create context with TLS state (using the correct key type)
+		tlsState := &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{clientCert},
+		}
+		ctx := context.WithValue(context.Background(), tlsStateKey{}, tlsState)
+
+		// Create mock peer
+		peer := connect.Peer{Addr: "127.0.0.1:5000"}
+
+		// Should pass authentication
+		err := interceptor.authenticate(ctx, peer)
+		if err != nil {
+			t.Errorf("expected authentication to pass, got: %v", err)
+		}
+	})
+
+	t.Run("EmptyCN", func(t *testing.T) {
+		// Generate CA and client cert with empty CN
+		ca, caPriv := generateTestCA(t)
+		clientCert := generateTestClientCertWithEmptyCN(t, ca, caPriv)
+
+		// Create CA pool
+		caPool := x509.NewCertPool()
+		caPool.AddCert(ca)
+
+		cfg := AuthConfig{
+			ClientCAPool: caPool,
+			Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+
+		interceptor := NewAuthInterceptor(cfg)
+
+		// Create context with TLS state
+		tlsState := &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{clientCert},
+		}
+		ctx := context.WithValue(context.Background(), tlsStateKey{}, tlsState)
+
+		peer := connect.Peer{Addr: "127.0.0.1:5000"}
+
+		err := interceptor.authenticate(ctx, peer)
+		if err == nil {
+			t.Error("expected authentication to fail with empty CN")
+		}
+	})
+
+	t.Run("NoPeerCertificates", func(t *testing.T) {
+		ca, _ := generateTestCA(t)
+
+		caPool := x509.NewCertPool()
+		caPool.AddCert(ca)
+
+		cfg := AuthConfig{
+			ClientCAPool: caPool,
+			Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+
+		interceptor := NewAuthInterceptor(cfg)
+
+		// Create context with TLS state but no peer certs
+		tlsState := &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{},
+		}
+		ctx := context.WithValue(context.Background(), tlsStateKey{}, tlsState)
+
+		peer := connect.Peer{Addr: "127.0.0.1:5000"}
+
+		err := interceptor.authenticate(ctx, peer)
+		if err == nil {
+			t.Error("expected authentication to fail without peer certificates")
+		}
+	})
+
+	t.Run("StrictNodeIDCheck_Allowed", func(t *testing.T) {
+		ca, caPriv := generateTestCA(t)
+		clientCert := generateTestClientCert(t, ca, caPriv, "allowed-node")
+
+		caPool := x509.NewCertPool()
+		caPool.AddCert(ca)
+
+		cfg := AuthConfig{
+			ClientCAPool:      caPool,
+			AllowedNodes:      map[string]bool{"allowed-node": true},
+			StrictNodeIDCheck: true,
+			Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+
+		interceptor := NewAuthInterceptor(cfg)
+
+		tlsState := &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{clientCert},
+		}
+		ctx := context.WithValue(context.Background(), tlsStateKey{}, tlsState)
+
+		peer := connect.Peer{Addr: "127.0.0.1:5000"}
+
+		err := interceptor.authenticate(ctx, peer)
+		if err != nil {
+			t.Errorf("expected authentication to pass for allowed node, got: %v", err)
+		}
+	})
+
+	t.Run("StrictNodeIDCheck_NotAllowed", func(t *testing.T) {
+		ca, caPriv := generateTestCA(t)
+		clientCert := generateTestClientCert(t, ca, caPriv, "unknown-node")
+
+		caPool := x509.NewCertPool()
+		caPool.AddCert(ca)
+
+		cfg := AuthConfig{
+			ClientCAPool:      caPool,
+			AllowedNodes:      map[string]bool{"allowed-node": true},
+			StrictNodeIDCheck: true,
+			Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+
+		interceptor := NewAuthInterceptor(cfg)
+
+		tlsState := &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{clientCert},
+		}
+		ctx := context.WithValue(context.Background(), tlsStateKey{}, tlsState)
+
+		peer := connect.Peer{Addr: "127.0.0.1:5000"}
+
+		err := interceptor.authenticate(ctx, peer)
+		if err == nil {
+			t.Error("expected authentication to fail for unknown node")
+		}
+	})
+}
+
+// TestTLSMiddleware tests the TLS middleware.
+func TestTLSMiddleware(t *testing.T) {
+	t.Run("WithTLS", func(t *testing.T) {
+		var capturedCtx context.Context
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedCtx = r.Context()
+		})
+
+		middleware := TLSMiddleware(handler)
+
+		req := &http.Request{
+			TLS: &tls.ConnectionState{
+				ServerName: "test.example.com",
+			},
+		}
+		req = req.WithContext(context.Background())
+
+		// Use a mock response writer
+		middleware.ServeHTTP(&mockResponseWriter{}, req)
+
+		// Verify TLS state was injected
+		tlsState := capturedCtx.Value(tlsStateKey{})
+		if tlsState == nil {
+			t.Error("expected TLS state to be injected into context")
+		}
+	})
+
+	t.Run("WithoutTLS", func(t *testing.T) {
+		var capturedCtx context.Context
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedCtx = r.Context()
+		})
+
+		middleware := TLSMiddleware(handler)
+
+		req := &http.Request{
+			TLS: nil, // No TLS
+		}
+		req = req.WithContext(context.Background())
+
+		// Use a mock response writer
+		middleware.ServeHTTP(&mockResponseWriter{}, req)
+
+		// Verify TLS state was NOT injected
+		tlsState := capturedCtx.Value(tlsStateKey{})
+		if tlsState != nil {
+			t.Error("expected no TLS state in context when TLS is nil")
+		}
+	})
+}
+
+// mockResponseWriter is a minimal mock for testing
+type mockResponseWriter struct {
+	headers http.Header
+	code    int
+}
+
+func (m *mockResponseWriter) Header() http.Header {
+	if m.headers == nil {
+		m.headers = make(http.Header)
+	}
+	return m.headers
+}
+
+func (m *mockResponseWriter) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func (m *mockResponseWriter) WriteHeader(code int) {
+	m.code = code
+}
+
+// TestVerifyCertificate_NotYetValid tests a not-yet-valid certificate.
+func TestVerifyCertificate_NotYetValid(t *testing.T) {
+	ca, caPriv := generateTestCA(t)
+	clientCert := generateFutureClientCert(t, ca, caPriv, "future-node")
+
+	caPool := x509.NewCertPool()
+	caPool.AddCert(ca)
+
+	cfg := AuthConfig{
+		ClientCAPool: caPool,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	interceptor := NewAuthInterceptor(cfg)
+
+	err := interceptor.verifyCertificate(clientCert)
+	if err == nil {
+		t.Error("expected not-yet-valid certificate to fail verification")
+	}
+}
+
+// Helper: generateTestClientCertWithEmptyCN generates a client cert with empty CN.
+func generateTestClientCertWithEmptyCN(t *testing.T, ca *x509.Certificate, caPriv *rsa.PrivateKey) *x509.Certificate {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate private key: %v", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(4),
+		Subject: pkix.Name{
+			CommonName:   "", // Empty CN
+			Organization: []string{"TokMesh Test"},
+		},
+		NotBefore:   time.Now().Add(-1 * time.Hour),
+		NotAfter:    time.Now().Add(24 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca, &privateKey.PublicKey, caPriv)
+	if err != nil {
+		t.Fatalf("failed to create certificate: %v", err)
+	}
+
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		t.Fatalf("failed to parse certificate: %v", err)
+	}
+
+	return cert
+}
+
+// Helper: generateFutureClientCert generates a not-yet-valid client certificate.
+func generateFutureClientCert(t *testing.T, ca *x509.Certificate, caPriv *rsa.PrivateKey, nodeID string) *x509.Certificate {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate private key: %v", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(5),
+		Subject: pkix.Name{
+			CommonName:   nodeID,
+			Organization: []string{"TokMesh Test"},
+		},
+		NotBefore:   time.Now().Add(24 * time.Hour), // Starts tomorrow
+		NotAfter:    time.Now().Add(48 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca, &privateKey.PublicKey, caPriv)
+	if err != nil {
+		t.Fatalf("failed to create certificate: %v", err)
+	}
+
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		t.Fatalf("failed to parse certificate: %v", err)
+	}
+
+	return cert
 }

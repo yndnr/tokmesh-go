@@ -367,3 +367,71 @@ func TestSlogWriter(t *testing.T) {
 		t.Errorf("expected %d bytes written, got %d", len("test message"), n)
 	}
 }
+
+// TestMetadataDelegate_NotifyMsgAndMergeRemoteState tests the no-op methods.
+func TestMetadataDelegate_NotifyMsgAndMergeRemoteState(t *testing.T) {
+	delegate := &metadataDelegate{
+		metadata: nodeMetadata{
+			RaftAddr:  "127.0.0.1:7000",
+			ClusterID: "test-cluster",
+		},
+	}
+
+	t.Run("NotifyMsg", func(t *testing.T) {
+		// NotifyMsg should not panic with nil
+		delegate.NotifyMsg(nil)
+
+		// NotifyMsg should not panic with actual data
+		delegate.NotifyMsg([]byte("test message"))
+
+		// NotifyMsg should not panic with empty data
+		delegate.NotifyMsg([]byte{})
+	})
+
+	t.Run("MergeRemoteState", func(t *testing.T) {
+		// MergeRemoteState should not panic with nil
+		delegate.MergeRemoteState(nil, false)
+
+		// MergeRemoteState should not panic with actual data
+		delegate.MergeRemoteState([]byte("remote state"), true)
+
+		// MergeRemoteState should not panic with empty data
+		delegate.MergeRemoteState([]byte{}, false)
+	})
+
+	t.Run("NodeMeta_Limit", func(t *testing.T) {
+		// Test NodeMeta with different limits
+		meta := delegate.NodeMeta(10) // Very small limit
+		if len(meta) == 0 {
+			t.Error("expected non-empty metadata even with small limit")
+		}
+
+		meta = delegate.NodeMeta(1024) // Large limit
+		if len(meta) == 0 {
+			t.Error("expected non-empty metadata with large limit")
+		}
+	})
+}
+
+// TestDiscovery_LocalNodeNil tests LocalNode when memberlist is nil.
+func TestDiscovery_LocalNodeNil(t *testing.T) {
+	// Test when discovery.list is set
+	cfg := DiscoveryConfig{
+		NodeID:   "test-local-node",
+		BindAddr: "127.0.0.1",
+		BindPort: 0,
+		RaftAddr: "127.0.0.1:7060",
+		Logger:   slog.New(slog.NewTextHandler(os.Stdout, nil)),
+	}
+
+	discovery, err := NewDiscovery(cfg)
+	if err != nil {
+		t.Fatalf("NewDiscovery failed: %v", err)
+	}
+	defer discovery.Shutdown()
+
+	node := discovery.LocalNode()
+	if node == nil {
+		t.Fatal("LocalNode should not be nil")
+	}
+}

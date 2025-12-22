@@ -750,3 +750,64 @@ func BenchmarkClone(b *testing.B) {
 		sm.Clone()
 	}
 }
+
+// TestGetReplicas tests the GetReplicas method.
+func TestGetReplicas(t *testing.T) {
+	sm := NewShardMap()
+
+	t.Run("WithReplicas", func(t *testing.T) {
+		shardID := uint32(10)
+		replicas := []string{"node-2", "node-3"}
+		sm.AssignShard(shardID, "node-1", replicas)
+
+		result := sm.GetReplicas(shardID)
+
+		if len(result) != len(replicas) {
+			t.Errorf("Replica count = %d, want %d", len(result), len(replicas))
+		}
+
+		for i, r := range result {
+			if r != replicas[i] {
+				t.Errorf("Replica[%d] = %q, want %q", i, r, replicas[i])
+			}
+		}
+	})
+
+	t.Run("NoReplicas", func(t *testing.T) {
+		shardID := uint32(20)
+		sm.AssignShard(shardID, "node-1", nil)
+
+		result := sm.GetReplicas(shardID)
+
+		if result != nil {
+			t.Errorf("Expected nil replicas, got %v", result)
+		}
+	})
+
+	t.Run("NonExistentShard", func(t *testing.T) {
+		result := sm.GetReplicas(999)
+
+		if result != nil {
+			t.Errorf("Expected nil for non-existent shard, got %v", result)
+		}
+	})
+
+	t.Run("DeepCopy", func(t *testing.T) {
+		shardID := uint32(30)
+		replicas := []string{"node-a", "node-b"}
+		sm.AssignShard(shardID, "node-1", replicas)
+
+		result := sm.GetReplicas(shardID)
+
+		// Modify returned replicas
+		if len(result) > 0 {
+			result[0] = "modified"
+		}
+
+		// Original should be unchanged
+		original := sm.GetReplicas(shardID)
+		if len(original) > 0 && original[0] == "modified" {
+			t.Error("GetReplicas should return a copy, not original")
+		}
+	})
+}

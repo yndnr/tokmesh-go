@@ -619,6 +619,10 @@ func TestFSMSnapshot_Release(t *testing.T) {
 
 	// Release should not panic
 	snapshot.Release()
+
+	// Call Release multiple times should be safe
+	snapshot.Release()
+	snapshot.Release()
 }
 
 func TestApply_MultipleOperations(t *testing.T) {
