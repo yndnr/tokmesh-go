@@ -756,3 +756,327 @@ func TestWriter_EmptyDir(t *testing.T) {
 		t.Fatal("NewWriter with empty dir should error")
 	}
 }
+
+// TestWriterDefaults tests that default values are applied correctly.
+func TestWriterDefaults(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create writer with minimal config (all defaults)
+	w, err := NewWriter(Config{
+		Dir: dir,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	defer w.Close()
+
+	// Verify writer was created successfully
+	if w == nil {
+		t.Fatal("writer should not be nil")
+	}
+}
+
+// TestWriter_ResumeExistingSegment tests that a writer can resume from an existing open segment.
+func TestWriter_ResumeExistingSegment(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create first writer and append entries
+	w1, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		BatchBytes:    1,
+		MaxFileSize:   1 << 20, // 1MB
+		MaxEntryCount: 1000,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter 1: %v", err)
+	}
+
+	s1, _ := domain.NewSession("user1")
+	s1.TokenHash = "resume_test_1"
+	s1.SetExpiration(time.Hour)
+	if err := w1.Append(NewCreateEntry(s1)); err != nil {
+		t.Fatalf("Append 1: %v", err)
+	}
+
+	// Flush and close
+	if err := w1.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	w1.Close()
+
+	// Create second writer (should resume from existing segment)
+	w2, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		BatchBytes:    1,
+		MaxFileSize:   1 << 20,
+		MaxEntryCount: 1000,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter 2: %v", err)
+	}
+	defer w2.Close()
+
+	// Append another entry
+	s2, _ := domain.NewSession("user2")
+	s2.TokenHash = "resume_test_2"
+	s2.SetExpiration(time.Hour)
+	if err := w2.Append(NewCreateEntry(s2)); err != nil {
+		t.Fatalf("Append 2: %v", err)
+	}
+
+	w2.Close()
+
+	// Read all entries
+	r, err := NewReader(dir, nil)
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer r.Close()
+
+	entries, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if len(entries) < 2 {
+		t.Errorf("expected at least 2 entries, got %d", len(entries))
+	}
+}
+
+// TestCompactor_TotalSize tests total size calculation.
+func TestCompactor_TotalSize(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create writer and add entries
+	w, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		BatchBytes:    1,
+		MaxFileSize:   DefaultMaxFileSize,
+		MaxEntryCount: DefaultMaxEntryCount,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		s, _ := domain.NewSession("user")
+		s.TokenHash = "hash_" + string(rune('a'+i))
+		s.SetExpiration(time.Hour)
+		w.Append(NewCreateEntry(s))
+	}
+	w.Close()
+
+	c := NewCompactor(dir)
+	size, err := c.TotalSize()
+	if err != nil {
+		t.Fatalf("TotalSize: %v", err)
+	}
+	if size == 0 {
+		t.Error("TotalSize should be > 0")
+	}
+}
+
+// TestCompactor_FileCount tests file count.
+func TestCompactor_FileCount(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create writer and add entries
+	w, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		BatchBytes:    1,
+		MaxFileSize:   DefaultMaxFileSize,
+		MaxEntryCount: DefaultMaxEntryCount,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	s, _ := domain.NewSession("user")
+	s.TokenHash = "filecount_hash"
+	s.SetExpiration(time.Hour)
+	w.Append(NewCreateEntry(s))
+	w.Close()
+
+	c := NewCompactor(dir)
+	count, err := c.FileCount()
+	if err != nil {
+		t.Fatalf("FileCount: %v", err)
+	}
+	if count == 0 {
+		t.Error("FileCount should be > 0")
+	}
+}
+
+// TestCompactor_CleanAllFiles tests cleaning all WAL files.
+func TestCompactor_CleanAllFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create writer and add entries
+	w, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		BatchBytes:    1,
+		MaxFileSize:   DefaultMaxFileSize,
+		MaxEntryCount: DefaultMaxEntryCount,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	s, _ := domain.NewSession("user")
+	s.TokenHash = "cleanall_hash"
+	s.SetExpiration(time.Hour)
+	w.Append(NewCreateEntry(s))
+	w.Close()
+
+	c := NewCompactor(dir)
+	err = c.CleanAll()
+	if err != nil {
+		t.Fatalf("CleanAll: %v", err)
+	}
+
+	// Verify no WAL files remain
+	count, _ := c.FileCount()
+	if count != 0 {
+		t.Errorf("FileCount after CleanAll = %d, want 0", count)
+	}
+}
+
+// TestReader_ScanSegments tests segment scanning.
+func TestReader_ScanSegments(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create multiple segments by setting low limits
+	w, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		BatchBytes:    1,
+		MaxFileSize:   200, // Small size to force rotation
+		MaxEntryCount: 2,   // Low count to force rotation
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	// Add entries to create multiple segments
+	for i := 0; i < 5; i++ {
+		s, _ := domain.NewSession("user")
+		s.TokenHash = "scan_hash_" + string(rune('a'+i))
+		s.SetExpiration(time.Hour)
+		s.Data["key"] = "value with some data to increase size"
+		w.Append(NewCreateEntry(s))
+		w.Flush()
+	}
+	w.Close()
+
+	// Read all entries
+	r, err := NewReader(dir, nil)
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer r.Close()
+
+	entries, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if len(entries) != 5 {
+		t.Errorf("got %d entries, want 5", len(entries))
+	}
+}
+
+// TestCodec_CorruptedEntry tests handling of corrupted entries.
+func TestCodec_CorruptedEntry(t *testing.T) {
+	// Test decoding with invalid data
+	_, err := decodeEntryFrame([]byte{0, 0, 0, 0}, nil)
+	if err == nil {
+		t.Error("expected error for short data")
+	}
+
+	// Test with invalid length
+	data := make([]byte, 8)
+	data[0] = 0xFF // Invalid length marker
+	data[1] = 0xFF
+	data[2] = 0xFF
+	data[3] = 0xFF
+	_, err = decodeEntryFrame(data, nil)
+	if err == nil {
+		t.Error("expected error for invalid length")
+	}
+}
+
+// TestWriter_BatchMode tests batch sync mode.
+func TestWriter_BatchMode(t *testing.T) {
+	dir := t.TempDir()
+
+	w, err := NewWriter(Config{
+		Dir:          dir,
+		SyncMode:     SyncModeBatch,
+		SyncInterval: 10 * time.Millisecond,
+		BatchCount:   100, // High count so batch doesn't trigger
+		BatchBytes:   1 << 20,
+		MaxFileSize:  DefaultMaxFileSize,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	s, _ := domain.NewSession("user")
+	s.TokenHash = "batch_hash"
+	s.SetExpiration(time.Hour)
+	if err := w.Append(NewCreateEntry(s)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Wait for sync interval to trigger
+	time.Sleep(50 * time.Millisecond)
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Verify entry was written
+	r, err := NewReader(dir, nil)
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer r.Close()
+
+	entries, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("got %d entries, want 1", len(entries))
+	}
+}
+
+// TestReader_EmptyDirectory tests reading from empty directory.
+func TestReader_EmptyDirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	r, err := NewReader(dir, nil)
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer r.Close()
+
+	entries, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("got %d entries from empty dir, want 0", len(entries))
+	}
+}

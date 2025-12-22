@@ -651,3 +651,255 @@ func TestEngine_DeleteExpired(t *testing.T) {
 		}
 	})
 }
+
+// TestEngine_TriggerSnapshot tests manual snapshot triggering.
+func TestEngine_TriggerSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = time.Hour // Long interval to prevent auto-trigger
+	cfg.WAL.SyncMode = wal.SyncModeSync
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Create some sessions
+	for i := 0; i < 5; i++ {
+		session, _ := domain.NewSession("snapshot_user")
+		session.TokenHash = "snapshot_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+	}
+
+	t.Run("trigger snapshot", func(t *testing.T) {
+		_, err := engine.TriggerSnapshot(ctx)
+		if err != nil {
+			t.Fatalf("TriggerSnapshot failed: %v", err)
+		}
+
+		// Verify snapshot files exist
+		snapshotDir := filepath.Join(tmpDir, "data", "snapshots")
+		files, err := os.ReadDir(snapshotDir)
+		if err != nil {
+			t.Fatalf("ReadDir failed: %v", err)
+		}
+		if len(files) == 0 {
+			t.Error("No snapshot files created")
+		}
+	})
+}
+
+// TestEngine_CountByUserID tests counting sessions by user ID.
+func TestEngine_CountByUserID(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = time.Hour
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Create sessions for user A
+	for i := 0; i < 3; i++ {
+		session, _ := domain.NewSession("count_user_a")
+		session.TokenHash = "count_a_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+	}
+
+	// Create sessions for user B
+	for i := 0; i < 2; i++ {
+		session, _ := domain.NewSession("count_user_b")
+		session.TokenHash = "count_b_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+	}
+
+	t.Run("count sessions for user A", func(t *testing.T) {
+		count, err := engine.CountByUserID(ctx, "count_user_a")
+		if err != nil {
+			t.Fatalf("CountByUserID failed: %v", err)
+		}
+		if count != 3 {
+			t.Errorf("count = %d, want 3", count)
+		}
+	})
+
+	t.Run("count sessions for user B", func(t *testing.T) {
+		count, err := engine.CountByUserID(ctx, "count_user_b")
+		if err != nil {
+			t.Fatalf("CountByUserID failed: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("count = %d, want 2", count)
+		}
+	})
+
+	t.Run("count sessions for non-existent user", func(t *testing.T) {
+		count, err := engine.CountByUserID(ctx, "non_existent_user")
+		if err != nil {
+			t.Fatalf("CountByUserID failed: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("count = %d, want 0", count)
+		}
+	})
+}
+
+// TestEngine_ListByUserID tests listing sessions by user ID.
+func TestEngine_ListByUserID(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = time.Hour
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Create sessions for user
+	for i := 0; i < 3; i++ {
+		session, _ := domain.NewSession("list_user")
+		session.TokenHash = "list_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+	}
+
+	t.Run("list sessions for user", func(t *testing.T) {
+		sessions, err := engine.ListByUserID(ctx, "list_user")
+		if err != nil {
+			t.Fatalf("ListByUserID failed: %v", err)
+		}
+		if len(sessions) != 3 {
+			t.Errorf("len(sessions) = %d, want 3", len(sessions))
+		}
+	})
+
+	t.Run("list sessions for non-existent user", func(t *testing.T) {
+		sessions, err := engine.ListByUserID(ctx, "non_existent")
+		if err != nil {
+			t.Fatalf("ListByUserID failed: %v", err)
+		}
+		if len(sessions) != 0 {
+			t.Errorf("len(sessions) = %d, want 0", len(sessions))
+		}
+	})
+}
+
+// TestEngine_WALErrors tests WAL error handling.
+func TestEngine_WALErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = time.Hour
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Create a session
+	session, _ := domain.NewSession("wal_error_user")
+	session.TokenHash = "wal_error_hash"
+	session.SetExpiration(time.Hour)
+	engine.Create(ctx, session)
+
+	// Close engine to make WAL unavailable
+	engine.Close()
+
+	t.Run("operations after close should fail", func(t *testing.T) {
+		session2, _ := domain.NewSession("wal_error_user2")
+		session2.TokenHash = "wal_error_hash2"
+		session2.SetExpiration(time.Hour)
+
+		err := engine.Create(ctx, session2)
+		if err == nil {
+			t.Error("Create after close should fail")
+		}
+	})
+}
+
+// TestEngine_DeleteByUserIDDirect tests DeleteByUserID method.
+func TestEngine_DeleteByUserIDDirect(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = time.Hour
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Create sessions for user
+	for i := 0; i < 5; i++ {
+		session, _ := domain.NewSession("delete_user")
+		session.TokenHash = "delete_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+	}
+
+	// Create session for another user
+	otherSession, _ := domain.NewSession("other_user")
+	otherSession.TokenHash = "other_hash"
+	otherSession.SetExpiration(time.Hour)
+	engine.Create(ctx, otherSession)
+
+	t.Run("delete all sessions for user", func(t *testing.T) {
+		deleted, err := engine.DeleteByUserID(ctx, "delete_user")
+		if err != nil {
+			t.Fatalf("DeleteByUserID failed: %v", err)
+		}
+		if deleted != 5 {
+			t.Errorf("deleted = %d, want 5", deleted)
+		}
+
+		// Verify sessions are deleted
+		sessions, _ := engine.ListByUserID(ctx, "delete_user")
+		if len(sessions) != 0 {
+			t.Errorf("len(sessions) after delete = %d, want 0", len(sessions))
+		}
+
+		// Verify other user's session still exists
+		count := engine.Count(ctx)
+		if count != 1 {
+			t.Errorf("total count = %d, want 1", count)
+		}
+	})
+}
+
+// TestEngine_ConfigValidation tests configuration validation.
+func TestEngine_ConfigValidation(t *testing.T) {
+	t.Run("empty data dir", func(t *testing.T) {
+		cfg := Config{}
+		_, err := New(cfg)
+		if err == nil {
+			t.Error("expected error for empty data dir")
+		}
+	})
+
+	t.Run("valid config with defaults", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cfg := DefaultConfig(tmpDir)
+
+		engine, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		engine.Close()
+	})
+}
