@@ -144,6 +144,50 @@ func TestEngine_CRUD(t *testing.T) {
 			t.Errorf("err = %v, want ErrSessionNotFound", err)
 		}
 	})
+
+	t.Run("update non-existent session", func(t *testing.T) {
+		session, _ := domain.NewSession("nonexistent_user")
+		session.ID = "nonexistent_id"
+		session.TokenHash = "nonexistent_hash"
+		session.SetExpiration(time.Hour)
+
+		err := engine.Update(ctx, session, 0)
+		if err == nil {
+			t.Error("expected error for non-existent session")
+		}
+	})
+
+	t.Run("update with wrong version", func(t *testing.T) {
+		session, _ := domain.NewSession("version_user")
+		session.TokenHash = "version_hash"
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+
+		session.Data["key"] = "value"
+		err := engine.Update(ctx, session, 999) // Wrong version
+		if err == nil {
+			t.Error("expected error for wrong version")
+		}
+	})
+
+	t.Run("update session non-existent", func(t *testing.T) {
+		session, _ := domain.NewSession("nonexistent_user2")
+		session.ID = "nonexistent_id2"
+		session.TokenHash = "nonexistent_hash2"
+		session.SetExpiration(time.Hour)
+
+		err := engine.UpdateSession(ctx, session)
+		if err == nil {
+			t.Error("expected error for non-existent session")
+		}
+	})
+
+	t.Run("delete non-existent session", func(t *testing.T) {
+		err := engine.Delete(ctx, "nonexistent_delete_id")
+		if err == nil {
+			t.Error("expected error for non-existent session")
+		}
+	})
 }
 
 func TestEngine_List(t *testing.T) {
@@ -468,6 +512,57 @@ func TestEngine_ApplyEntry(t *testing.T) {
 		err := engine.applyEntry(ctx, entry)
 		if err == nil {
 			t.Error("expected error for missing session data")
+		}
+	})
+
+	t.Run("apply update entry without session", func(t *testing.T) {
+		entry := &wal.Entry{
+			OpType:    wal.OpTypeUpdate,
+			SessionID: "test",
+			Session:   nil, // Missing session
+		}
+		err := engine.applyEntry(ctx, entry)
+		if err == nil {
+			t.Error("expected error for missing session data on UPDATE")
+		}
+	})
+
+	t.Run("apply unknown entry type", func(t *testing.T) {
+		entry := &wal.Entry{
+			OpType:    99, // Unknown type
+			SessionID: "test",
+		}
+		err := engine.applyEntry(ctx, entry)
+		if err == nil {
+			t.Error("expected error for unknown entry type")
+		}
+	})
+
+	t.Run("apply delete entry for non-existent session", func(t *testing.T) {
+		entry := wal.NewDeleteEntry("non_existent_session_id")
+		err := engine.applyEntry(ctx, entry)
+		// Should NOT return error - ignores not found during recovery
+		if err != nil {
+			t.Errorf("applyEntry(DELETE non-existent) should not return error, got: %v", err)
+		}
+	})
+
+	t.Run("apply create entry for duplicate session", func(t *testing.T) {
+		session, _ := domain.NewSession("dup_user")
+		session.TokenHash = "dup_hash"
+		session.SetExpiration(time.Hour)
+
+		// Create first
+		entry := wal.NewCreateEntry(session)
+		err := engine.applyEntry(ctx, entry)
+		if err != nil {
+			t.Fatalf("first applyEntry(CREATE) failed: %v", err)
+		}
+
+		// Create duplicate - should NOT return error (ignores conflict during recovery)
+		err = engine.applyEntry(ctx, entry)
+		if err != nil {
+			t.Errorf("applyEntry(CREATE duplicate) should not return error, got: %v", err)
 		}
 	})
 }
