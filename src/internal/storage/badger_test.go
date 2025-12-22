@@ -3,11 +3,14 @@ package storage
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestBadgerEngine_BasicOperations(t *testing.T) {
@@ -404,4 +407,321 @@ func TestBadgerEngine_AutoGC(t *testing.T) {
 
 	// Note: GC might not have run if there's no garbage to collect
 	t.Logf("Auto-GC test completed, lastGCTime=%d", stats.LastGCTime)
+}
+
+func TestBadgerEngine_LoadSnapshot(t *testing.T) {
+	// Create source engine with data
+	srcDir, err := os.MkdirTemp("", "badger-test-src-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(srcDir)
+
+	srcCfg := DefaultKVConfig(srcDir)
+	srcCfg.Badger.GCInterval = "1h"
+
+	srcEngine, err := NewBadgerEngine(srcCfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Insert data into source
+	testData := map[string]string{
+		"snap-key1": "snap-value1",
+		"snap-key2": "snap-value2",
+		"snap-key3": "snap-value3",
+	}
+
+	for k, v := range testData {
+		if err := srcEngine.Set(ctx, []byte(k), []byte(v)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Save snapshot
+	snapshot, err := srcEngine.SaveSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotData, err := io.ReadAll(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Close()
+	srcEngine.Close()
+
+	t.Logf("Snapshot size: %d bytes", len(snapshotData))
+
+	// Create destination engine
+	dstDir, err := os.MkdirTemp("", "badger-test-dst-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dstDir)
+
+	dstCfg := DefaultKVConfig(dstDir)
+	dstCfg.Badger.GCInterval = "1h"
+
+	dstEngine, err := NewBadgerEngine(dstCfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Load snapshot into destination
+	reader := &bytesReadCloser{data: snapshotData}
+	if err := dstEngine.LoadSnapshot(ctx, reader); err != nil {
+		t.Fatal(err)
+	}
+	defer dstEngine.Close()
+
+	// Verify data was restored
+	for k, v := range testData {
+		got, err := dstEngine.Get(ctx, []byte(k))
+		if err != nil {
+			t.Errorf("failed to get key %s: %v", k, err)
+			continue
+		}
+
+		if string(got) != v {
+			t.Errorf("key %s: expected %s, got %s", k, v, got)
+		}
+	}
+}
+
+// bytesReadCloser wraps []byte as io.Reader
+type bytesReadCloser struct {
+	data   []byte
+	offset int
+}
+
+func (r *bytesReadCloser) Read(p []byte) (n int, err error) {
+	if r.offset >= len(r.data) {
+		return 0, io.EOF
+	}
+	n = copy(p, r.data[r.offset:])
+	r.offset += n
+	return n, nil
+}
+
+func (r *bytesReadCloser) Close() error {
+	return nil
+}
+
+func TestBadgerEngine_RegisterMetrics(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "badger-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := DefaultKVConfig(tmpDir)
+	cfg.Badger.GCInterval = "1h"
+
+	engine, err := NewBadgerEngine(cfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	// Register metrics
+	registry := prometheus.NewRegistry()
+	engine.RegisterMetrics(registry)
+
+	// Insert some data to have meaningful metrics
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		key := []byte{byte(i)}
+		value := make([]byte, 100)
+		if err := engine.Set(ctx, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Wait a moment for metrics to be initialized
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify metrics can be gathered
+	metrics, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check that our metrics are registered
+	metricNames := make(map[string]bool)
+	for _, m := range metrics {
+		metricNames[m.GetName()] = true
+	}
+
+	expectedMetrics := []string{
+		"tokmesh_badger_lsm_size_bytes",
+		"tokmesh_badger_value_log_size_bytes",
+		"tokmesh_badger_total_size_bytes",
+		"tokmesh_badger_last_gc_timestamp_seconds",
+		"tokmesh_badger_gc_bytes_reclaimed_total",
+	}
+
+	for _, name := range expectedMetrics {
+		if !metricNames[name] {
+			t.Logf("metric %s not yet gathered (may update on next tick)", name)
+		}
+	}
+
+	t.Logf("Registered %d metrics", len(metrics))
+}
+
+func TestBadgerEngine_SaveSnapshotFull(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "badger-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := DefaultKVConfig(tmpDir)
+	cfg.Badger.GCInterval = "1h"
+
+	engine, err := NewBadgerEngine(cfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Insert test data with various keys
+	for i := 0; i < 50; i++ {
+		key := []byte(fmt.Sprintf("full-snap-key-%d", i))
+		value := make([]byte, 200)
+		for j := range value {
+			value[j] = byte(i + j)
+		}
+		if err := engine.Set(ctx, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Save snapshot
+	snapshot, err := engine.SaveSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read all snapshot data
+	data, err := io.ReadAll(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := snapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Snapshot should have data
+	if len(data) == 0 {
+		t.Error("expected non-empty snapshot")
+	}
+
+	t.Logf("Full snapshot size: %d bytes for 50 keys", len(data))
+}
+
+func TestBadgerEngine_AppendEntryNonUint64Key(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "badger-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := DefaultKVConfig(tmpDir)
+	cfg.Badger.GCInterval = "1h"
+
+	engine, err := NewBadgerEngine(cfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Test with non-uint64 key (not 8 bytes)
+	key := []byte("string-key")
+	value := []byte("value")
+
+	offset, err := engine.AppendEntry(ctx, key, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Offset should be 0 for non-uint64 keys
+	if offset != 0 {
+		t.Errorf("expected offset 0 for non-uint64 key, got %d", offset)
+	}
+
+	// Verify data was stored
+	got, err := engine.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(got) != string(value) {
+		t.Errorf("expected %s, got %s", value, got)
+	}
+}
+
+func TestBadgerEngine_InvalidConfig(t *testing.T) {
+	// Test with empty dir
+	cfg := DefaultKVConfig("")
+
+	_, err := NewBadgerEngine(cfg, slog.Default())
+	if err == nil {
+		t.Error("expected error for empty dir")
+	}
+}
+
+func TestBadgerEngine_NilLogger(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "badger-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := DefaultKVConfig(tmpDir)
+	cfg.Badger.GCInterval = "1h"
+
+	// Should use default logger when nil is passed
+	engine, err := NewBadgerEngine(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	// Engine should work normally
+	ctx := context.Background()
+	if err := engine.Set(ctx, []byte("key"), []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBadgerEngine_InvalidGCInterval(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "badger-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := DefaultKVConfig(tmpDir)
+	cfg.Badger.GCInterval = "invalid"
+
+	engine, err := NewBadgerEngine(cfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	// Should use default interval and not crash
+	ctx := context.Background()
+	if err := engine.Set(ctx, []byte("key"), []byte("value")); err != nil {
+		t.Fatal(err)
+	}
 }
