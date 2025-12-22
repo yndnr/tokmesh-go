@@ -769,3 +769,303 @@ func BenchmarkHandler_CreateSession(b *testing.B) {
 		h.ServeHTTP(rec, req)
 	}
 }
+
+// TestHandler_RenewSession tests session renewal.
+func TestHandler_RenewSession(t *testing.T) {
+	h, sessionRepo, _ := testHandler()
+
+	// Create a test session
+	session := &domain.Session{
+		ID:        "tmss-renew-test-session-12345",
+		UserID:    "user-123",
+		TokenHash: "test-token-hash-renew",
+		CreatedAt: time.Now().UnixMilli(),
+		ExpiresAt: time.Now().Add(1 * time.Hour).UnixMilli(),
+		Version:   1,
+	}
+	sessionRepo.Create(context.Background(), session)
+
+	t.Run("renews session successfully", func(t *testing.T) {
+		body := `{"ttl": 7200}`
+		req := httptest.NewRequest("POST", "/sessions/"+session.ID+"/renew", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp Response
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp.Code != "OK" {
+			t.Errorf("expected code 'OK', got '%s'", resp.Code)
+		}
+	})
+
+	t.Run("returns error for non-existent session", func(t *testing.T) {
+		body := `{"ttl": 3600}`
+		req := httptest.NewRequest("POST", "/sessions/non-existent/renew", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d", rec.Code)
+		}
+	})
+}
+
+// TestHandler_TouchSession tests session touch.
+func TestHandler_TouchSession(t *testing.T) {
+	h, sessionRepo, _ := testHandler()
+
+	// Create a test session
+	session := &domain.Session{
+		ID:         "tmss-touch-test-session-12345",
+		UserID:     "user-123",
+		TokenHash:  "test-token-hash-touch",
+		CreatedAt:  time.Now().UnixMilli(),
+		ExpiresAt:  time.Now().Add(24 * time.Hour).UnixMilli(),
+		LastActive: time.Now().UnixMilli(),
+		Version:    1,
+	}
+	sessionRepo.Create(context.Background(), session)
+
+	t.Run("touches session successfully", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/sessions/"+session.ID+"/touch", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp Response
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp.Code != "OK" {
+			t.Errorf("expected code 'OK', got '%s'", resp.Code)
+		}
+	})
+
+	t.Run("returns error for non-existent session", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/sessions/non-existent/touch", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d", rec.Code)
+		}
+	})
+}
+
+// TestHandler_RevokeUserSessions tests batch session revocation by user.
+func TestHandler_RevokeUserSessions(t *testing.T) {
+	h, sessionRepo, _ := testHandler()
+
+	// Create test sessions for a user
+	for i := 0; i < 3; i++ {
+		session := &domain.Session{
+			ID:        newTestSessionID(),
+			UserID:    "user-batch-revoke",
+			CreatedAt: time.Now().UnixMilli(),
+			ExpiresAt: time.Now().Add(24 * time.Hour).UnixMilli(),
+		}
+		sessionRepo.Create(context.Background(), session)
+	}
+
+	t.Run("revokes all user sessions", func(t *testing.T) {
+		// Route is POST /users/{user_id}/sessions/revoke
+		req := httptest.NewRequest("POST", "/users/user-batch-revoke/sessions/revoke", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp Response
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		data, ok := resp.Data.(map[string]any)
+		if !ok {
+			t.Fatal("expected data to be a map")
+		}
+
+		if data["revoked_count"] == nil {
+			t.Error("expected revoked_count in response")
+		}
+	})
+}
+
+// TestHandler_ListAPIKeys tests API key listing.
+func TestHandler_ListAPIKeys(t *testing.T) {
+	h, _, apiKeyRepo := testHandler()
+
+	// Create test API keys
+	for i := 0; i < 3; i++ {
+		key := &domain.APIKey{
+			KeyID:     "tmak_test-key-" + string(rune('a'+i)),
+			Name:      "Test Key " + string(rune('A'+i)),
+			Role:      domain.RoleValidator,
+			Status:    domain.KeyStatusActive,
+			CreatedAt: time.Now().UnixMilli(),
+		}
+		apiKeyRepo.Create(context.Background(), key)
+	}
+
+	t.Run("lists all API keys", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/admin/v1/keys", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp Response
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		data, ok := resp.Data.(map[string]any)
+		if !ok {
+			t.Fatal("expected data to be a map")
+		}
+
+		keys, ok := data["keys"].([]any)
+		if !ok {
+			t.Fatal("expected keys to be an array")
+		}
+
+		if len(keys) < 3 {
+			t.Errorf("expected at least 3 keys, got %d", len(keys))
+		}
+	})
+}
+
+// TestHandler_UpdateAPIKeyStatus tests API key status update.
+func TestHandler_UpdateAPIKeyStatus(t *testing.T) {
+	h, _, apiKeyRepo := testHandler()
+
+	// Create a test API key
+	key := &domain.APIKey{
+		KeyID:     "tmak_status-update-test",
+		Name:      "Status Update Test",
+		Role:      domain.RoleValidator,
+		Status:    domain.KeyStatusActive,
+		CreatedAt: time.Now().UnixMilli(),
+	}
+	apiKeyRepo.Create(context.Background(), key)
+
+	t.Run("disables API key", func(t *testing.T) {
+		body := `{"enabled": false}`
+		req := httptest.NewRequest("POST", "/admin/v1/keys/"+key.KeyID+"/status", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		// Verify key is disabled
+		updated, _ := apiKeyRepo.Get(context.Background(), key.KeyID)
+		if updated.Status != domain.KeyStatusDisabled {
+			t.Errorf("expected status 'disabled', got '%s'", updated.Status)
+		}
+	})
+
+	t.Run("enables API key", func(t *testing.T) {
+		body := `{"enabled": true}`
+		req := httptest.NewRequest("POST", "/admin/v1/keys/"+key.KeyID+"/status", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("returns error for non-existent key", func(t *testing.T) {
+		body := `{"enabled": false}`
+		req := httptest.NewRequest("POST", "/admin/v1/keys/non-existent/status", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d", rec.Code)
+		}
+	})
+}
+
+// TestHandler_RotateAPIKey tests API key rotation.
+func TestHandler_RotateAPIKey(t *testing.T) {
+	h, _, apiKeyRepo := testHandler()
+
+	// Create a test API key
+	key := &domain.APIKey{
+		KeyID:      "tmak_rotate-test-key-123",
+		Name:       "Rotate Test Key",
+		Role:       domain.RoleAdmin,
+		Status:     domain.KeyStatusActive,
+		SecretHash: "original-secret-hash",
+		CreatedAt:  time.Now().UnixMilli(),
+	}
+	apiKeyRepo.Create(context.Background(), key)
+
+	t.Run("rotates API key secret", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/admin/v1/keys/"+key.KeyID+"/rotate", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp Response
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		data, ok := resp.Data.(map[string]any)
+		if !ok {
+			t.Fatal("expected data to be a map")
+		}
+
+		if data["new_secret"] == nil || data["new_secret"] == "" {
+			t.Error("expected new_secret in response")
+		}
+	})
+
+	t.Run("returns error for non-existent key", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/admin/v1/keys/non-existent/rotate", nil)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d", rec.Code)
+		}
+	})
+}
