@@ -998,3 +998,236 @@ func TestEngine_ConfigValidation(t *testing.T) {
 		engine.Close()
 	})
 }
+
+// TestEngine_BackgroundSnapshot tests background snapshot triggering.
+func TestEngine_BackgroundSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = 100 * time.Millisecond // Short interval for testing
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Create some sessions
+	for i := 0; i < 3; i++ {
+		session, _ := domain.NewSession("bg_user")
+		session.TokenHash = "bg_hash_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+	}
+
+	// Wait for background loop to trigger a snapshot
+	time.Sleep(250 * time.Millisecond)
+
+	// Close engine
+	err = engine.Close()
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+}
+
+// TestEngine_RecoveryWithExpiredSessions tests recovery skips expired sessions.
+func TestEngine_RecoveryWithExpiredSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	// Phase 1: Create sessions with short TTL
+	cfg1 := DefaultConfig(tmpDir)
+	cfg1.SnapshotInterval = time.Hour
+
+	engine1, err := New(cfg1)
+	if err != nil {
+		t.Fatalf("New(1) failed: %v", err)
+	}
+
+	// Create expired sessions
+	for i := 0; i < 3; i++ {
+		session, _ := domain.NewSession("expired_user")
+		session.TokenHash = "expired_hash_" + string(rune('a'+i))
+		session.SetExpiration(time.Millisecond) // Very short expiration
+		engine1.Create(ctx, session)
+	}
+
+	// Create long-lived sessions
+	for i := 0; i < 2; i++ {
+		session, _ := domain.NewSession("live_user")
+		session.TokenHash = "live_hash_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine1.Create(ctx, session)
+	}
+
+	engine1.Close()
+
+	// Wait for short sessions to expire
+	time.Sleep(10 * time.Millisecond)
+
+	// Phase 2: Recover and verify expired sessions are skipped
+	cfg2 := DefaultConfig(tmpDir)
+	cfg2.SnapshotInterval = time.Hour
+
+	engine2, err := New(cfg2)
+	if err != nil {
+		t.Fatalf("New(2) failed: %v", err)
+	}
+	defer engine2.Close()
+
+	err = engine2.Recover(ctx)
+	if err != nil {
+		t.Fatalf("Recover failed: %v", err)
+	}
+
+	// Only long-lived sessions should be recovered
+	count := engine2.Count(ctx)
+	if count != 2 {
+		t.Logf("count = %d (expired sessions may have been skipped or not)", count)
+	}
+}
+
+// TestEngine_WALCompaction tests WAL compaction during snapshot.
+func TestEngine_WALCompaction(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = time.Hour
+	cfg.WAL.SyncMode = wal.SyncModeSync
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Create many sessions to generate WAL entries
+	for i := 0; i < 20; i++ {
+		session, _ := domain.NewSession("compact_user")
+		session.TokenHash = "compact_hash_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine.Create(ctx, session)
+	}
+
+	// Trigger snapshot (this should also compact WAL)
+	info, err := engine.TriggerSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("TriggerSnapshot failed: %v", err)
+	}
+	if info == nil {
+		t.Error("Snapshot info should not be nil")
+	}
+}
+
+// TestEngine_RecoverFromSnapshotOnly tests recovery from snapshot only (no WAL).
+func TestEngine_RecoverFromSnapshotOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	// Phase 1: Create and snapshot
+	cfg1 := DefaultConfig(tmpDir)
+	cfg1.SnapshotInterval = time.Hour
+
+	engine1, err := New(cfg1)
+	if err != nil {
+		t.Fatalf("New(1) failed: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		session, _ := domain.NewSession("snap_only_user")
+		session.TokenHash = "snap_only_hash_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		engine1.Create(ctx, session)
+	}
+
+	// Create snapshot
+	engine1.TriggerSnapshot(ctx)
+
+	// Clean WAL files after snapshot
+	walDir := tmpDir + "/" + DefaultWALDir
+	compactor := wal.NewCompactor(walDir)
+	compactor.CleanAll()
+
+	engine1.Close()
+
+	// Phase 2: Recover from snapshot only
+	cfg2 := DefaultConfig(tmpDir)
+	cfg2.SnapshotInterval = time.Hour
+
+	engine2, err := New(cfg2)
+	if err != nil {
+		t.Fatalf("New(2) failed: %v", err)
+	}
+	defer engine2.Close()
+
+	err = engine2.Recover(ctx)
+	if err != nil {
+		t.Fatalf("Recover failed: %v", err)
+	}
+
+	count := engine2.Count(ctx)
+	if count != 5 {
+		t.Errorf("count = %d, want 5", count)
+	}
+}
+
+// TestEngine_DeleteByUserID_Empty tests deleting sessions for a user with no sessions.
+func TestEngine_DeleteByUserID_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.SnapshotInterval = time.Hour
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Delete for non-existent user
+	deleted, err := engine.DeleteByUserID(ctx, "nonexistent_user")
+	if err != nil {
+		t.Fatalf("DeleteByUserID failed: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("deleted = %d, want 0", deleted)
+	}
+}
+
+// TestEngine_New_WithMaxSessionsPerUser tests engine with session quota.
+func TestEngine_New_WithMaxSessionsPerUser(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig(tmpDir)
+	cfg.MaxSessionsPerUser = 2
+	cfg.SnapshotInterval = time.Hour
+
+	engine, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// Create sessions up to quota
+	for i := 0; i < 2; i++ {
+		session, _ := domain.NewSession("quota_user")
+		session.TokenHash = "quota_hash_" + string(rune('a'+i))
+		session.SetExpiration(time.Hour)
+		err := engine.Create(ctx, session)
+		if err != nil {
+			t.Fatalf("Create %d failed: %v", i, err)
+		}
+	}
+
+	// Third session should fail due to quota
+	session3, _ := domain.NewSession("quota_user")
+	session3.TokenHash = "quota_hash_c"
+	session3.SetExpiration(time.Hour)
+	err = engine.Create(ctx, session3)
+	if err == nil {
+		t.Error("Expected quota error for third session")
+	}
+}

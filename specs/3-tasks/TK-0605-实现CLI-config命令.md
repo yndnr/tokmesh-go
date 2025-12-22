@@ -1,6 +1,6 @@
 # TK-0605-实现CLI-config命令
 
-**状态**: 草稿
+**状态**: ✅ 已完成
 **优先级**: P2
 **范围**: CLI config 子命令组
 **关联需求**: `specs/1-requirements/RQ-0502-配置管理需求.md`, `specs/1-requirements/RQ-0602-CLI交互模式与连接管理.md`

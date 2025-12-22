@@ -1,6 +1,6 @@
 # TK-0604-实现CLI-apikey命令
 
-**状态**: 草稿
+**状态**: ✅ 已完成
 **优先级**: P1
 **范围**: CLI apikey 子命令组
 **关联需求**: `specs/1-requirements/RQ-0201-安全与鉴权体系.md`, `specs/1-requirements/RQ-0304-管理接口规约.md`

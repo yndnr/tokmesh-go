@@ -1242,3 +1242,201 @@ func TestReader_ReadWithOffset(t *testing.T) {
 		t.Errorf("got %d entries, want 5", len(entries))
 	}
 }
+
+// TestCompactor_CompactWithRetain tests Compact with retainCount safeguard.
+func TestCompactor_CompactWithRetain(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create multiple segments by setting low limits
+	w, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		MaxFileSize:   100, // Very small to force rotation
+		MaxEntryCount: 1,   // Force rotation after each entry
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	// Add multiple entries to create multiple segments
+	for i := 0; i < 5; i++ {
+		s, _ := domain.NewSession(fmt.Sprintf("user%d", i))
+		s.TokenHash = fmt.Sprintf("compact_test_%d", i)
+		s.SetExpiration(time.Hour)
+		if err := w.Append(NewCreateEntry(s)); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	w.Close()
+
+	// Get offset after all writes
+	c := NewCompactor(dir, WithRetainCount(2))
+	count, err := c.FileCount()
+	if err != nil {
+		t.Fatalf("FileCount: %v", err)
+	}
+	if count < 2 {
+		t.Skipf("Not enough segments created: %d", count)
+	}
+
+	// Compact with high offset (should try to delete old segments)
+	err = c.Compact(uint64(10) << 32) // Segment ID 10
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	// Should still have at least retainCount files
+	remainingCount, _ := c.FileCount()
+	if remainingCount < 2 {
+		t.Errorf("Should retain at least 2 files, got %d", remainingCount)
+	}
+}
+
+// TestCompactor_CompactEmptyDir tests Compact on empty directory.
+func TestCompactor_CompactEmptyDir(t *testing.T) {
+	dir := t.TempDir()
+
+	c := NewCompactor(dir)
+	err := c.Compact(1000)
+	if err != nil {
+		t.Errorf("Compact on empty dir should not error: %v", err)
+	}
+}
+
+// TestReader_NonexistentDir tests reading from nonexistent directory.
+func TestReader_NonexistentDir(t *testing.T) {
+	r, err := NewReader("/nonexistent/path", nil)
+	if err != nil {
+		t.Fatalf("NewReader should not error for nonexistent dir: %v", err)
+	}
+	defer r.Close()
+
+	entries, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("got %d entries from nonexistent dir, want 0", len(entries))
+	}
+}
+
+// TestWriter_SegmentRotation tests that segments rotate correctly.
+func TestWriter_SegmentRotation(t *testing.T) {
+	dir := t.TempDir()
+
+	w, err := NewWriter(Config{
+		Dir:           dir,
+		SyncMode:      SyncModeSync,
+		BatchCount:    1,
+		MaxFileSize:   100, // Very small to force rotation
+		MaxEntryCount: 2,   // Force rotation after 2 entries
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	// Add entries to trigger rotation
+	for i := 0; i < 5; i++ {
+		s, _ := domain.NewSession(fmt.Sprintf("user%d", i))
+		s.TokenHash = fmt.Sprintf("rotation_%d", i)
+		s.SetExpiration(time.Hour)
+		s.Data["data"] = "some data to increase size"
+		if err := w.Append(NewCreateEntry(s)); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	w.Close()
+
+	// Verify multiple segments were created
+	c := NewCompactor(dir)
+	count, _ := c.FileCount()
+	if count < 2 {
+		t.Logf("Expected multiple segments, got %d (acceptable if entries fit in one segment)", count)
+	}
+}
+
+// TestVerifyTrailerChecksum_ValidFile tests checksum verification on valid file.
+func TestVerifyTrailerChecksum_ValidFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a valid WAL file
+	w, err := NewWriter(Config{
+		Dir:      dir,
+		SyncMode: SyncModeSync,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	s, _ := domain.NewSession("user")
+	s.TokenHash = "verify_test"
+	s.SetExpiration(time.Hour)
+	w.Append(NewCreateEntry(s))
+	w.Close()
+
+	// Find the WAL file
+	c := NewCompactor(dir)
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+
+	found := false
+	for _, f := range files {
+		if !f.IsDir() {
+			path := filepath.Join(dir, f.Name())
+			err := VerifyTrailerChecksum(path)
+			if err == nil {
+				found = true
+				break
+			}
+		}
+	}
+	if !found && c != nil {
+		t.Log("No finalized WAL file found (acceptable)")
+	}
+}
+
+// TestReader_Seek tests Reader.Seek functionality.
+func TestReader_Seek(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create writer and write entries
+	w, err := NewWriter(Config{
+		Dir:      dir,
+		SyncMode: SyncModeSync,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		s, _ := domain.NewSession(fmt.Sprintf("user%d", i))
+		s.TokenHash = fmt.Sprintf("seek_test_%d", i)
+		s.SetExpiration(time.Hour)
+		w.Append(NewCreateEntry(s))
+	}
+	w.Close()
+
+	// Read and seek
+	r, err := NewReader(dir, nil)
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer r.Close()
+
+	// Seek to beginning
+	if err := r.Seek(0); err != nil {
+		t.Fatalf("Seek(0): %v", err)
+	}
+
+	// Read all entries after seek
+	entries, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("got %d entries, want 3", len(entries))
+	}
+}

@@ -1,6 +1,6 @@
 # TK-0301-实现HTTP接口
 
-**状态**: 草稿
+**状态**: ✅ 已完成 (覆盖率 86.9%)
 **优先级**: P1
 **范围**: HTTP/REST API 服务端实现
 **关联需求**: `specs/1-requirements/RQ-0301-业务接口规约-OpenAPI.md`, `specs/1-requirements/RQ-0304-管理接口规约.md`

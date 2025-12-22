@@ -1,6 +1,6 @@
 # TK-0606-实现CLI-backup命令
 
-**状态**: 草稿
+**状态**: ✅ 已完成
 **优先级**: P2
 **范围**: CLI backup 子命令组
 **关联需求**: `specs/1-requirements/RQ-0304-管理接口规约.md`

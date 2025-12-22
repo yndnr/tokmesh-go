@@ -1,6 +1,6 @@
 # TK-0603-实现CLI-session命令
 
-**状态**: 草稿
+**状态**: ✅ 已完成
 **优先级**: P1
 **范围**: CLI session 子命令组
 **关联需求**: `specs/1-requirements/RQ-0301-业务接口规约-OpenAPI.md`
