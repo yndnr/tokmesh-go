@@ -5,9 +5,11 @@
 package clusterserver
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
+	"sync/atomic"
 
 	"github.com/hashicorp/memberlist"
 )
@@ -18,7 +20,10 @@ type Discovery struct {
 	memberList *memberlist.Memberlist
 	events     chan memberlist.NodeEvent
 	logger     *slog.Logger
-	shutdown   bool // Track if already shut down
+	shutdown   atomic.Bool // Track if already shut down (atomic to prevent double-close)
+
+	// Cluster identification
+	clusterID string
 
 	// Callbacks
 	onJoin   func(nodeID, addr string)
@@ -30,6 +35,10 @@ type Discovery struct {
 type DiscoveryConfig struct {
 	// NodeID is the unique node identifier.
 	NodeID string
+
+	// ClusterID is the unique cluster identifier.
+	// @req RQ-0401 § 1.2 - Cluster identification for preventing incorrect merges.
+	ClusterID string
 
 	// BindAddr is the address to bind for gossip communication.
 	BindAddr string
@@ -60,10 +69,14 @@ func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 	mlConfig.BindAddr = cfg.BindAddr
 	mlConfig.BindPort = cfg.BindPort
 
-	// Store Raft address in metadata for other nodes to discover
-	if cfg.RaftAddr != "" {
+	// Store Raft address and ClusterID in metadata for other nodes to discover
+	if cfg.RaftAddr != "" || cfg.ClusterID != "" {
+		metadata := nodeMetadata{
+			RaftAddr:  cfg.RaftAddr,
+			ClusterID: cfg.ClusterID,
+		}
 		mlConfig.Delegate = &metadataDelegate{
-			raftAddr: []byte(cfg.RaftAddr),
+			metadata: metadata,
 		}
 	}
 
@@ -74,9 +87,10 @@ func NewDiscovery(cfg DiscoveryConfig) (*Discovery, error) {
 	events := make(chan memberlist.NodeEvent, 100)
 
 	d := &Discovery{
-		config: mlConfig,
-		events: events,
-		logger: cfg.Logger,
+		config:    mlConfig,
+		events:    events,
+		logger:    cfg.Logger,
+		clusterID: cfg.ClusterID,
 	}
 
 	// Set up event delegate
@@ -137,11 +151,15 @@ func (d *Discovery) Leave() error {
 
 // Shutdown stops the discovery mechanism.
 func (d *Discovery) Shutdown() error {
-	if d.shutdown || d.memberList == nil {
+	// Use atomic CAS to ensure only one goroutine can shut down
+	if !d.shutdown.CompareAndSwap(false, true) {
+		// Already shut down
 		return nil
 	}
 
-	d.shutdown = true
+	if d.memberList == nil {
+		return nil
+	}
 
 	if err := d.memberList.Shutdown(); err != nil {
 		return fmt.Errorf("shutdown memberlist: %w", err)
@@ -184,10 +202,36 @@ type eventDelegate struct {
 func (e *eventDelegate) NotifyJoin(node *memberlist.Node) {
 	gossipAddr := net.JoinHostPort(node.Addr.String(), fmt.Sprintf("%d", node.Port))
 
+	// Parse metadata from joining node
+	var metadata nodeMetadata
+	if len(node.Meta) > 0 {
+		if err := json.Unmarshal(node.Meta, &metadata); err != nil {
+			e.discovery.logger.Error("failed to parse node metadata",
+				"node_id", node.Name,
+				"error", err)
+			// Reject node with invalid metadata
+			return
+		}
+	}
+
+	// Validate ClusterID if configured
+	// @req RQ-0401 § 1.2 - Cluster ID validation prevents incorrect merges
+	if e.discovery.clusterID != "" && metadata.ClusterID != "" {
+		if metadata.ClusterID != e.discovery.clusterID {
+			e.discovery.logger.Error("cluster ID mismatch - rejecting node",
+				"node_id", node.Name,
+				"expected_cluster_id", e.discovery.clusterID,
+				"actual_cluster_id", metadata.ClusterID,
+				"action", "node_rejected")
+			// Reject node with mismatched cluster ID
+			return
+		}
+	}
+
 	// Extract Raft address from metadata
-	raftAddr := string(node.Meta)
+	raftAddr := metadata.RaftAddr
 	if raftAddr == "" {
-		// Fallback to gossip address if no metadata (shouldn't happen in production)
+		// Fallback to gossip address if no Raft address in metadata
 		e.discovery.logger.Warn("node joined without Raft metadata, using gossip address",
 			"node_id", node.Name,
 			"gossip_addr", gossipAddr)
@@ -196,6 +240,7 @@ func (e *eventDelegate) NotifyJoin(node *memberlist.Node) {
 
 	e.discovery.logger.Info("node joined",
 		"node_id", node.Name,
+		"cluster_id", metadata.ClusterID,
 		"gossip_addr", gossipAddr,
 		"raft_addr", raftAddr)
 
@@ -238,17 +283,29 @@ func (w *slogWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// metadataDelegate provides node metadata (Raft address) to memberlist.
+// nodeMetadata represents the metadata stored in memberlist for each node.
+type nodeMetadata struct {
+	RaftAddr  string `json:"raft_addr"`
+	ClusterID string `json:"cluster_id"`
+}
+
+// metadataDelegate provides node metadata (Raft address + ClusterID) to memberlist.
 type metadataDelegate struct {
-	raftAddr []byte
+	metadata nodeMetadata
 }
 
 // NodeMeta returns metadata about this node (up to 512 bytes).
 func (m *metadataDelegate) NodeMeta(limit int) []byte {
-	if len(m.raftAddr) > limit {
-		return m.raftAddr[:limit]
+	data, err := json.Marshal(m.metadata)
+	if err != nil {
+		return nil
 	}
-	return m.raftAddr
+
+	if len(data) > limit {
+		// Truncate if exceeds limit (shouldn't happen with our simple metadata)
+		return data[:limit]
+	}
+	return data
 }
 
 // NotifyMsg is called when a user message is received (not used).

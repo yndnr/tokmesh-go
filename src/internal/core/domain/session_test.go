@@ -46,6 +46,39 @@ func TestNewSession(t *testing.T) {
 	}
 }
 
+func TestNewSession_EmptyUserID(t *testing.T) {
+	_, err := NewSession("")
+	if err == nil {
+		t.Fatal("NewSession with empty userID should return error")
+	}
+	if !IsDomainError(err, "TM-ARG-1001") {
+		t.Errorf("Expected TM-ARG-1001 error, got %v", err)
+	}
+}
+
+func TestNewSession_UserIDTooLong(t *testing.T) {
+	longID := strings.Repeat("a", MaxUserIDLength+1)
+	_, err := NewSession(longID)
+	if err == nil {
+		t.Fatal("NewSession with too long userID should return error")
+	}
+	if !IsDomainError(err, "TM-ARG-1001") {
+		t.Errorf("Expected TM-ARG-1001 error, got %v", err)
+	}
+}
+
+func TestNewSession_UserIDMaxLength(t *testing.T) {
+	// Test exactly at the maximum length (should succeed)
+	maxLengthID := strings.Repeat("a", MaxUserIDLength)
+	session, err := NewSession(maxLengthID)
+	if err != nil {
+		t.Fatalf("NewSession with max length userID should succeed, got error: %v", err)
+	}
+	if session.UserID != maxLengthID {
+		t.Errorf("UserID = %q, want %q", session.UserID, maxLengthID)
+	}
+}
+
 func TestGenerateSessionID(t *testing.T) {
 	ids := make(map[string]bool)
 
@@ -348,6 +381,14 @@ func TestSession_Clone(t *testing.T) {
 	clone.Data["new"] = "item"
 	if _, exists := original.Data["new"]; exists {
 		t.Error("Adding to clone Data should not affect original")
+	}
+}
+
+func TestSession_Clone_NilReceiver(t *testing.T) {
+	var nilSession *Session
+	clone := nilSession.Clone()
+	if clone != nil {
+		t.Errorf("Clone of nil session should return nil, got %v", clone)
 	}
 }
 

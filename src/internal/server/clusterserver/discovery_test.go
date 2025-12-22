@@ -5,6 +5,7 @@
 package clusterserver
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"testing"
@@ -44,9 +45,13 @@ func TestNewDiscovery(t *testing.T) {
 			t.Errorf("expected node name 'test-node', got '%s'", localNode.Name)
 		}
 
-		// Verify metadata contains Raft address
-		if string(localNode.Meta) != "127.0.0.1:7000" {
-			t.Errorf("expected metadata '127.0.0.1:7000', got '%s'", string(localNode.Meta))
+		// Verify metadata contains Raft address (now in JSON format)
+		var metadata nodeMetadata
+		if err := json.Unmarshal(localNode.Meta, &metadata); err != nil {
+			t.Fatalf("failed to unmarshal metadata: %v", err)
+		}
+		if metadata.RaftAddr != "127.0.0.1:7000" {
+			t.Errorf("expected metadata RaftAddr '127.0.0.1:7000', got '%s'", metadata.RaftAddr)
 		}
 	})
 
@@ -219,12 +224,21 @@ func TestDiscovery_Callbacks(t *testing.T) {
 		t.Fatal("expected eventDelegate")
 	}
 
-	// Create a mock node
+	// Create a mock node with JSON metadata
+	metadata := nodeMetadata{
+		RaftAddr:  "127.0.0.1:9000",
+		ClusterID: "",
+	}
+	metaBytes, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("failed to marshal metadata: %v", err)
+	}
+
 	mockNode := &memberlist.Node{
 		Name: "mock-node",
 		Addr: []byte{127, 0, 0, 1},
 		Port: 8000,
-		Meta: []byte("127.0.0.1:9000"),
+		Meta: metaBytes,
 	}
 
 	// Trigger join event
@@ -296,19 +310,25 @@ func TestDiscovery_Shutdown(t *testing.T) {
 // TestMetadataDelegate tests the metadata delegate.
 func TestMetadataDelegate(t *testing.T) {
 	delegate := &metadataDelegate{
-		raftAddr: []byte("127.0.0.1:7000"),
+		metadata: nodeMetadata{
+			RaftAddr:  "127.0.0.1:7000",
+			ClusterID: "test-cluster-123",
+		},
 	}
 
 	// Test NodeMeta
 	meta := delegate.NodeMeta(512)
-	if string(meta) != "127.0.0.1:7000" {
-		t.Errorf("expected '127.0.0.1:7000', got '%s'", string(meta))
+	if len(meta) == 0 {
+		t.Errorf("expected non-empty metadata")
 	}
 
-	// Test NodeMeta with limit
-	meta = delegate.NodeMeta(10)
-	if string(meta) != "127.0.0.1:" {
-		t.Errorf("expected '127.0.0.1:', got '%s'", string(meta))
+	// Verify metadata contains Raft address (JSON format)
+	metaStr := string(meta)
+	if !containsSubstr(metaStr, "127.0.0.1:7000") {
+		t.Errorf("expected metadata to contain Raft address, got %s", metaStr)
+	}
+	if !containsSubstr(metaStr, "test-cluster-123") {
+		t.Errorf("expected metadata to contain ClusterID, got %s", metaStr)
 	}
 
 	// Test other methods (should not panic)
@@ -316,6 +336,20 @@ func TestMetadataDelegate(t *testing.T) {
 	delegate.GetBroadcasts(0, 0)
 	delegate.LocalState(false)
 	delegate.MergeRemoteState(nil, false)
+}
+
+// Helper function for substring check
+func containsSubstr(s, substr string) bool {
+	return len(s) >= len(substr) && indexOfSubstr(s, substr) >= 0
+}
+
+func indexOfSubstr(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
 }
 
 // TestSlogWriter tests the slog writer adapter.

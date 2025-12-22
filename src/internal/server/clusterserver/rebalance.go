@@ -38,6 +38,10 @@ type RebalanceConfig struct {
 	// ConcurrentShards is the number of shards to migrate in parallel.
 	ConcurrentShards int
 
+	// StreamingTimeout is the timeout for streaming RPC operations (e.g., TransferShard)
+	// Default: 10min
+	StreamingTimeout time.Duration
+
 	// Logger for structured logging.
 	Logger *slog.Logger
 }
@@ -48,6 +52,7 @@ func DefaultRebalanceConfig() RebalanceConfig {
 		MaxRateBytesPerSec: 20 * 1024 * 1024, // 20MB/s
 		MinTTL:             60 * time.Second,  // 60s
 		ConcurrentShards:   3,
+		StreamingTimeout:   10 * time.Minute,  // 10min
 		Logger:             slog.Default(),
 	}
 }
@@ -189,7 +194,9 @@ func (rm *RebalanceManager) TriggerRebalance(ctx context.Context, oldMap, newMap
 func (rm *RebalanceManager) computeMigrations(oldMap, newMap *ShardMap) map[uint32]*MigrationTarget {
 	migrations := make(map[uint32]*MigrationTarget)
 
-	for shardID := uint32(0); shardID < uint32(len(newMap.Shards)); shardID++ {
+	// Iterate through ALL possible shards (0 to DefaultShardCount-1)
+	// Note: newMap.Shards is a map, not a slice - len() returns assigned count, not max shard ID
+	for shardID := uint32(0); shardID < DefaultShardCount; shardID++ {
 		oldOwner, oldExists := oldMap.GetShard(shardID)
 		newOwner, newExists := newMap.GetShard(shardID)
 
@@ -243,13 +250,23 @@ func (rm *RebalanceManager) migrateShardData(ctx context.Context, shardID uint32
 	}
 
 	// 2. Create streaming context with timeout
-	streamCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	streamCtx, cancel := context.WithTimeout(ctx, rm.cfg.StreamingTimeout)
 	defer cancel()
 
 	stream := client.TransferShard(streamCtx)
 
 	// 3. Setup rate limiter
-	limiter := rate.NewLimiter(rate.Limit(rm.cfg.MaxRateBytesPerSec), int(rm.cfg.MaxRateBytesPerSec))
+	// @req RQ-0401 § 1.1 - Bandwidth limiting for rebalance traffic
+	//
+	// Use a smaller burst size (1MB) to smooth out traffic and prevent
+	// sending the entire rate limit instantly (which would defeat rate limiting).
+	// This provides better network stability and prevents overwhelming the receiver.
+	burstSize := int(1024 * 1024) // 1MB burst
+	if burstSize > int(rm.cfg.MaxRateBytesPerSec) {
+		// If rate is less than 1MB/s, use the rate as burst
+		burstSize = int(rm.cfg.MaxRateBytesPerSec)
+	}
+	limiter := rate.NewLimiter(rate.Limit(rm.cfg.MaxRateBytesPerSec), burstSize)
 
 	// 4. Scan storage and stream sessions
 	var (
@@ -359,7 +376,64 @@ func (rm *RebalanceManager) migrateShardData(ctx context.Context, shardID uint32
 		"elapsed", elapsed,
 		"throughput_mbps", fmt.Sprintf("%.2f", throughputMBps))
 
+	// 7. Cleanup source node data after successful migration
+	// @req RQ-0401 § 1.3.1 - Clean up migrated data to prevent memory leaks
+	if err := rm.cleanupShardData(ctx, shardID); err != nil {
+		// Log error but don't fail the migration - cleanup is best-effort
+		rm.logger.Error("failed to cleanup migrated shard data",
+			"shard_id", shardID,
+			"error", err,
+			"action", "manual_cleanup_may_be_required")
+		// Migration is still successful, data is safely on target node
+	}
+
 	return nil
+}
+
+// cleanupShardData deletes all sessions belonging to a shard from local storage.
+//
+// This is called after successful shard migration to free up memory and prevent
+// serving stale data from the old owner node.
+//
+// @req RQ-0401 § 1.3.1 - Data cleanup after migration
+func (rm *RebalanceManager) cleanupShardData(ctx context.Context, shardID uint32) error {
+	if rm.storage == nil {
+		return fmt.Errorf("storage not configured")
+	}
+
+	rm.logger.Info("cleaning up migrated shard data",
+		"shard_id", shardID)
+
+	deletedCount := 0
+	var lastErr error
+
+	// Scan and delete all sessions belonging to this shard
+	rm.storage.Scan(func(sess *domain.Session) bool {
+		// Only delete sessions from the specified shard
+		if sess.ShardID != shardID {
+			return true // Continue scanning
+		}
+
+		// Delete session from local storage
+		if err := rm.storage.Delete(ctx, sess.ID); err != nil {
+			rm.logger.Warn("failed to delete session during cleanup",
+				"session_id", sess.ID,
+				"shard_id", shardID,
+				"error", err)
+			lastErr = err
+			// Continue cleanup even if individual deletes fail
+		} else {
+			deletedCount++
+		}
+
+		return true // Continue scanning
+	})
+
+	rm.logger.Info("shard data cleanup completed",
+		"shard_id", shardID,
+		"deleted_count", deletedCount)
+
+	return lastErr
 }
 
 // updateTaskError updates task status to failed with error message.

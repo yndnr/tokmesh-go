@@ -24,7 +24,7 @@ func TestToClusterConfig_ValidConfig(t *testing.T) {
 		},
 	}
 
-	result, err := ToClusterConfig(cfg, logger)
+	result, err := ToClusterConfig(cfg, nil, logger)
 	if err != nil {
 		t.Fatalf("ToClusterConfig failed: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestToClusterConfig_AutoGenerateNodeID(t *testing.T) {
 		},
 	}
 
-	result, err := ToClusterConfig(cfg, logger)
+	result, err := ToClusterConfig(cfg, nil, logger)
 	if err != nil {
 		t.Fatalf("ToClusterConfig failed: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestToClusterConfig_PreserveExistingNodeID(t *testing.T) {
 		},
 	}
 
-	result, err := ToClusterConfig(cfg, logger)
+	result, err := ToClusterConfig(cfg, nil, logger)
 	if err != nil {
 		t.Fatalf("ToClusterConfig failed: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestToClusterConfig_PreserveExistingNodeID(t *testing.T) {
 func TestToClusterConfig_NilConfig(t *testing.T) {
 	logger := slog.Default()
 
-	_, err := ToClusterConfig(nil, logger)
+	_, err := ToClusterConfig(nil, nil, logger)
 	if err == nil {
 		t.Error("Expected error for nil config")
 	}
@@ -159,7 +159,7 @@ func TestToClusterConfig_EmptySeeds(t *testing.T) {
 		},
 	}
 
-	result, err := ToClusterConfig(cfg, logger)
+	result, err := ToClusterConfig(cfg, nil, logger)
 	if err != nil {
 		t.Fatalf("ToClusterConfig failed: %v", err)
 	}
@@ -239,24 +239,21 @@ func TestToClusterConfig_AllFields(t *testing.T) {
 
 	cfg := &ServerConfig{
 		Cluster: ClusterSection{
-			NodeID:               "full-config-node",
-			RaftAddr:             "192.168.1.10:5343",
-			GossipAddr:           "192.168.1.10",
-			GossipPort:           5344,
-			Bootstrap:            false,
-			Seeds:                []string{"192.168.1.1:5344", "192.168.1.2:5344", "192.168.1.3:5344"},
-			DataDir:              "/data/tokmesh/raft",
-			ReplicationFactor:    5,
-			RaftHeartbeatTimeout: 2 * time.Second,
-			RaftElectionTimeout:  3 * time.Second,
-			RaftSnapshotInterval: 50000,
-			TLSCertFile:          "/etc/tokmesh/certs/server.crt",
-			TLSKeyFile:           "/etc/tokmesh/certs/server.key",
-			TLSClientCAFile:      "/etc/tokmesh/certs/ca.crt",
+			NodeID:                 "full-config-node",
+			RaftAddr:               "192.168.1.10:5343",
+			GossipAddr:             "192.168.1.10",
+			GossipPort:             5344,
+			Bootstrap:              false,
+			Seeds:                  []string{"192.168.1.1:5344", "192.168.1.2:5344", "192.168.1.3:5344"},
+			DataDir:                "/data/tokmesh/raft",
+			ReplicationFactor:      5,
+			RebalanceMaxRateMBps:   30,
+			RebalanceMinTTL:        90 * time.Second,
+			RebalanceConcurrentQty: 5,
 		},
 	}
 
-	result, err := ToClusterConfig(cfg, logger)
+	result, err := ToClusterConfig(cfg, nil, logger)
 	if err != nil {
 		t.Fatalf("ToClusterConfig failed: %v", err)
 	}
@@ -287,9 +284,15 @@ func TestToClusterConfig_AllFields(t *testing.T) {
 		t.Errorf("ReplicationFactor = %d, want 5", result.ReplicationFactor)
 	}
 
-	// NOTE: RaftHeartbeatTimeout, RaftElectionTimeout, RaftSnapshotInterval,
-	// and TLS fields are not currently mapped to clusterserver.Config.
-	// This is expected as clusterserver.Config only includes fields needed
-	// for cluster initialization. Other fields should be used during
-	// Raft/Gossip configuration.
+	// Verify rebalance configuration
+	expectedMaxRate := int64(30 * 1024 * 1024) // 30 MB/s in bytes
+	if result.Rebalance.MaxRateBytesPerSec != expectedMaxRate {
+		t.Errorf("Rebalance.MaxRateBytesPerSec = %d, want %d", result.Rebalance.MaxRateBytesPerSec, expectedMaxRate)
+	}
+	if result.Rebalance.MinTTL != 90*time.Second {
+		t.Errorf("Rebalance.MinTTL = %v, want %v", result.Rebalance.MinTTL, 90*time.Second)
+	}
+	if result.Rebalance.ConcurrentShards != 5 {
+		t.Errorf("Rebalance.ConcurrentShards = %d, want 5", result.Rebalance.ConcurrentShards)
+	}
 }

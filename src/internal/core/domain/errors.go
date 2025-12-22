@@ -9,8 +9,7 @@ import (
 // DomainError represents a business domain error with a structured error code.
 // Error codes follow the format defined in specs/governance/error-codes.md.
 //
-// @req RQ-0104
-// @design DS-0104
+// @governance specs/governance/error-codes.md § 2
 type DomainError struct {
 	Code    string // Error code (e.g., "TM-SESS-4040")
 	Message string // Human-readable message
@@ -42,7 +41,7 @@ func (e *DomainError) Is(target error) bool {
 
 // NewDomainError creates a new DomainError with the given code and message.
 //
-// @design DS-0104
+// @governance specs/governance/error-codes.md § 2.1
 func NewDomainError(code, message string) *DomainError {
 	return &DomainError{
 		Code:    code,
@@ -78,7 +77,7 @@ func (e *DomainError) Wrap(cause error) *DomainError {
 // IsDomainError checks if an error is a DomainError with the given code.
 // If code is empty, it only checks if the error is a DomainError.
 //
-// @design DS-0104
+// @governance specs/governance/error-codes.md § 2.2
 func IsDomainError(err error, code string) bool {
 	var de *DomainError
 	if errors.As(err, &de) {
@@ -92,7 +91,7 @@ func IsDomainError(err error, code string) bool {
 
 // GetErrorCode extracts the error code from an error if it's a DomainError.
 //
-// @design DS-0104
+// @governance specs/governance/error-codes.md § 2.2
 func GetErrorCode(err error) string {
 	var de *DomainError
 	if errors.As(err, &de) {

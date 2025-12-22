@@ -73,7 +73,7 @@ func (h *Handler) Join(
 	}
 
 	// Add to Raft cluster as voter
-	if err := h.server.raft.AddVoter(req.Msg.NodeId, req.Msg.AdvertiseAddress, 10*time.Second); err != nil {
+	if err := h.server.raft.AddVoter(req.Msg.NodeId, req.Msg.AdvertiseAddress, h.server.config.Timeouts.RaftMembership); err != nil {
 		h.logger.Error("failed to add voter",
 			"node_id", req.Msg.NodeId,
 			"error", err)
@@ -166,6 +166,14 @@ func (h *Handler) TransferShard(
 	ctx context.Context,
 	stream *connect.ClientStream[v1.TransferShardRequest],
 ) (*connect.Response[v1.TransferShardResponse], error) {
+	// Pre-flight check: Storage must be available for data migration
+	// @req RQ-0401 § 1.3.1 - Storage is required for rebalancing
+	if h.server.storage == nil {
+		h.logger.Error("transfer shard rejected - storage engine not configured")
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("storage engine not available - cannot accept shard migration"))
+	}
+
 	h.logger.Info("transfer shard stream started")
 
 	var (
@@ -197,14 +205,15 @@ func (h *Handler) TransferShard(
 		}
 
 		// Apply received session to local storage
-		if h.server.storage != nil {
-			// Use Create to add the session to local storage
-			if err := h.server.storage.Create(ctx, &session); err != nil {
-				h.logger.Warn("failed to store received session",
-					"session_id", session.ID,
-					"error", err)
-				// Continue even if storage fails - we track this in metrics
-			}
+		// Note: Storage nil check done at function start, so this cannot be nil
+		if err := h.server.storage.Create(ctx, &session); err != nil {
+			h.logger.Error("failed to store received session - aborting migration",
+				"session_id", session.ID,
+				"shard_id", shardID,
+				"error", err)
+			// Storage failure is fatal for migration - return error
+			return nil, connect.NewError(connect.CodeInternal,
+				fmt.Errorf("storage failed for session %s: %w", session.ID, err))
 		}
 
 		receivedCount++

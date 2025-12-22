@@ -19,6 +19,7 @@ import (
 	"github.com/yndnr/tokmesh-go/internal/core/service"
 	"github.com/yndnr/tokmesh-go/internal/infra/confloader"
 	"github.com/yndnr/tokmesh-go/internal/infra/shutdown"
+	"github.com/yndnr/tokmesh-go/internal/server/clusterserver"
 	"github.com/yndnr/tokmesh-go/internal/server/config"
 	"github.com/yndnr/tokmesh-go/internal/server/httpserver"
 	"github.com/yndnr/tokmesh-go/internal/server/httpserver/handler"
@@ -107,10 +108,46 @@ func run() error {
 		redisServer = redisserver.New(redisCfg, services.Session, services.Token, services.Auth, slogLogger)
 	}
 
+	// Create cluster server if cluster mode is enabled
+	var clusterServer *clusterserver.Server
+	if cfg.Cluster.NodeID != "" {
+		log.Info("initializing cluster mode", "node_id", cfg.Cluster.NodeID)
+
+		// Convert config to cluster config
+		clusterCfg, err := config.ToClusterConfig(cfg, storageEngine, slogLogger)
+		if err != nil {
+			return fmt.Errorf("create cluster config: %w", err)
+		}
+
+		// Create cluster server
+		clusterServer, err = clusterserver.NewServer(clusterCfg)
+		if err != nil {
+			return fmt.Errorf("create cluster server: %w", err)
+		}
+
+		// Start cluster server
+		if err := clusterServer.Start(ctx); err != nil {
+			return fmt.Errorf("start cluster server: %w", err)
+		}
+
+		log.Info("cluster server started",
+			"node_id", cfg.Cluster.NodeID,
+			"raft_addr", cfg.Cluster.RaftAddr,
+			"gossip_addr", cfg.Cluster.GossipAddr,
+			"gossip_port", cfg.Cluster.GossipPort)
+	}
+
 	// Setup graceful shutdown
 	shutdownHandler := shutdown.NewHandler(30 * time.Second)
 
 	// Register shutdown hooks (reverse order of startup)
+	if clusterServer != nil {
+		shutdownHandler.OnShutdown(func(ctx context.Context) error {
+			log.Info("shutting down cluster server")
+			return clusterServer.Stop(ctx)
+		})
+	}
+
 	if redisServer != nil {
 		shutdownHandler.OnShutdown(func(ctx context.Context) error {
 			log.Info("shutting down Redis server")

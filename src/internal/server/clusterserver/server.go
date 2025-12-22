@@ -8,6 +8,7 @@ package clusterserver
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +61,10 @@ type Config struct {
 	// Node identification
 	NodeID string
 
+	// Cluster identification
+	// @req RQ-0401 § 1.2 - Cluster ID for preventing incorrect merges
+	ClusterID string
+
 	// Network addresses
 	RaftBindAddr    string // e.g., "127.0.0.1:5343"
 	GossipBindAddr  string // e.g., "127.0.0.1:5344"
@@ -81,8 +86,43 @@ type Config struct {
 	// Rebalance configuration
 	Rebalance RebalanceConfig
 
+	// TLS configuration for cluster communication
+	// @req RQ-0401 § 3.1.3 - cluster.tls.* configuration
+	TLSConfig *tls.Config
+
+	// Timeout configuration
+	// @req RQ-0401 § 2.4 - Configurable timeouts for RPC and Raft operations
+	Timeouts TimeoutConfig
+
 	// Logger
 	Logger *slog.Logger
+}
+
+// TimeoutConfig configures various timeout values.
+type TimeoutConfig struct {
+	// RaftApply is the timeout for Raft Apply operations (state machine commands)
+	// Default: 5s
+	RaftApply time.Duration
+
+	// RaftMembership is the timeout for Raft membership operations (AddVoter, RemoveServer)
+	// Default: 10s
+	RaftMembership time.Duration
+
+	// RaftTransport is the timeout for Raft TCP transport connections
+	// Default: 10s
+	RaftTransport time.Duration
+
+	// StreamingRPC is the timeout for streaming RPC operations (e.g., TransferShard)
+	// Default: 10min
+	StreamingRPC time.Duration
+
+	// WaitLeader is the timeout for waiting for leader election
+	// Default: 10s
+	WaitLeader time.Duration
+
+	// Rebalance is the timeout for full cluster rebalance operations
+	// Default: 30min
+	Rebalance time.Duration
 }
 
 // ErrNotLeader indicates the operation requires the leader node.
@@ -149,22 +189,48 @@ func NewServer(cfg Config) (*Server, error) {
 //   1. Raft consensus node
 //   2. Gossip-based node discovery
 //   3. Leader monitoring loop
+//
+// @req RQ-0401 § 2.2 - Defensive resource cleanup on initialization failure
 func (s *Server) Start(ctx context.Context) error {
 	s.logger.Info("starting cluster server", "node_id", s.config.NodeID)
 
+	// Track initialization progress for cleanup on failure
+	var (
+		raftInitialized      bool
+		discoveryInitialized bool
+	)
+
+	// Defer cleanup on failure
+	// This ensures resources are properly released if any initialization step fails
+	defer func() {
+		if err := recover(); err != nil {
+			s.logger.Error("PANIC during server start - cleaning up resources",
+				"error", err)
+			if discoveryInitialized && s.discovery != nil {
+				_ = s.discovery.Shutdown()
+			}
+			if raftInitialized && s.raft != nil {
+				_ = s.raft.Close()
+			}
+			panic(err) // Re-panic after cleanup
+		}
+	}()
+
 	// 1. Create and start Raft node
 	raftCfg := RaftConfig{
-		NodeID:    s.config.NodeID,
-		BindAddr:  s.config.RaftBindAddr,
-		DataDir:   s.config.RaftDataDir,
-		Bootstrap: s.config.Bootstrap,
-		Logger:    s.logger,
+		NodeID:           s.config.NodeID,
+		BindAddr:         s.config.RaftBindAddr,
+		DataDir:          s.config.RaftDataDir,
+		Bootstrap:        s.config.Bootstrap,
+		TransportTimeout: s.config.Timeouts.RaftTransport,
+		Logger:           s.logger,
 	}
 
 	raftNode, err := NewRaftNode(raftCfg, s.fsm)
 	if err != nil {
 		return fmt.Errorf("create raft node: %w", err)
 	}
+	raftInitialized = true
 
 	// Hold lock only for assignment
 	s.mu.Lock()
@@ -174,6 +240,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// 2. Create and start node discovery
 	discoveryCfg := DiscoveryConfig{
 		NodeID:    s.config.NodeID,
+		ClusterID: s.config.ClusterID, // Pass Cluster ID for validation
 		BindAddr:  s.config.GossipBindAddr,
 		BindPort:  s.config.GossipBindPort,
 		RaftAddr:  s.config.RaftBindAddr, // Pass Raft address for metadata
@@ -183,9 +250,14 @@ func (s *Server) Start(ctx context.Context) error {
 
 	discovery, err := NewDiscovery(discoveryCfg)
 	if err != nil {
-		s.raft.Close()
+		// Clean up Raft before returning error
+		if closeErr := s.raft.Close(); closeErr != nil {
+			s.logger.Error("failed to close raft during cleanup",
+				"error", closeErr)
+		}
 		return fmt.Errorf("create discovery: %w", err)
 	}
+	discoveryInitialized = true
 
 	s.mu.Lock()
 	s.discovery = discovery
@@ -197,10 +269,15 @@ func (s *Server) Start(ctx context.Context) error {
 	// 4. Start leader monitoring loop
 	go s.leaderMonitorLoop()
 
-	// 5. Wait for initial leader election (if bootstrap mode)
+	// 5. Start replication monitoring loop (if leader and replication enabled)
+	if s.config.ReplicationFactor > 1 {
+		go s.replicationMonitorLoop()
+	}
+
+	// 6. Wait for initial leader election (if bootstrap mode)
 	// IMPORTANT: Do NOT hold lock while waiting, as handleLeaderChange needs it
 	if s.config.Bootstrap {
-		if err := s.waitForLeader(ctx, 10*time.Second); err != nil {
+		if err := s.waitForLeader(ctx, s.config.Timeouts.WaitLeader); err != nil {
 			s.logger.Warn("leader election timeout", "error", err)
 			// Continue anyway - leader might be elected later
 		}
@@ -310,7 +387,7 @@ func (s *Server) ApplyShardUpdate(shardID uint32, nodeID string, replicas []stri
 	}
 
 	// Apply through Raft
-	if err := s.raft.Apply(data, 5*time.Second); err != nil {
+	if err := s.raft.Apply(data, s.config.Timeouts.RaftApply); err != nil {
 		return fmt.Errorf("raft apply: %w", err)
 	}
 
@@ -344,7 +421,7 @@ func (s *Server) ApplyMemberJoin(nodeID, addr string) error {
 		return fmt.Errorf("encode log entry: %w", err)
 	}
 
-	if err := s.raft.Apply(data, 5*time.Second); err != nil {
+	if err := s.raft.Apply(data, s.config.Timeouts.RaftApply); err != nil {
 		return fmt.Errorf("raft apply: %w", err)
 	}
 
@@ -373,7 +450,7 @@ func (s *Server) ApplyMemberLeave(nodeID string) error {
 		return fmt.Errorf("encode log entry: %w", err)
 	}
 
-	if err := s.raft.Apply(data, 5*time.Second); err != nil {
+	if err := s.raft.Apply(data, s.config.Timeouts.RaftApply); err != nil {
 		return fmt.Errorf("raft apply: %w", err)
 	}
 
@@ -435,43 +512,81 @@ func (s *Server) setupDiscoveryCallbacks() {
 	s.discovery.OnJoin(func(nodeID, addr string) {
 		s.logger.Info("discovery: node joined", "node_id", nodeID, "raft_addr", addr)
 
-		// If we're the leader, add to Raft and FSM
-		if s.IsLeader() {
-			if err := s.ApplyMemberJoin(nodeID, addr); err != nil {
-				s.logger.Error("failed to apply member join",
-					"node_id", nodeID,
-					"error", err)
-			}
-
-			// Add to Raft cluster as voter using Raft address
-			if err := s.raft.AddVoter(nodeID, addr, 10*time.Second); err != nil {
-				s.logger.Error("failed to add voter",
-					"node_id", nodeID,
-					"raft_addr", addr,
-					"error", err)
-			}
+		// Only leader processes membership changes
+		if !s.IsLeader() {
+			s.logger.Debug("ignoring join - not leader", "node_id", nodeID)
+			return
 		}
+
+		// Step 1: Add to Raft cluster first (fail fast)
+		// @req RQ-0401 § 2.1 - Raft must be source of truth for membership
+		if err := s.raft.AddVoter(nodeID, addr, s.config.Timeouts.RaftMembership); err != nil {
+			s.logger.Error("failed to add voter - aborting join",
+				"node_id", nodeID,
+				"raft_addr", addr,
+				"error", err)
+			return // Abort on Raft failure
+		}
+
+		// Step 2: Update FSM state
+		if err := s.ApplyMemberJoin(nodeID, addr); err != nil {
+			s.logger.Error("failed to apply member join - rolling back raft membership",
+				"node_id", nodeID,
+				"error", err)
+
+			// Rollback: Remove from Raft to maintain consistency
+			if rollbackErr := s.raft.RemoveServer(nodeID, s.config.Timeouts.RaftMembership); rollbackErr != nil {
+				s.logger.Error("CRITICAL: failed to rollback raft membership after FSM failure",
+					"node_id", nodeID,
+					"rollback_error", rollbackErr,
+					"original_error", err,
+					"action", "manual_intervention_required")
+			}
+			return
+		}
+
+		s.logger.Info("node join completed successfully",
+			"node_id", nodeID,
+			"raft_addr", addr)
+
+		// Check cluster parity after successful join
+		s.checkClusterParity()
 	})
 
 	// OnLeave: When a node leaves via Gossip
 	s.discovery.OnLeave(func(nodeID string) {
 		s.logger.Info("discovery: node left", "node_id", nodeID)
 
-		// If we're the leader, remove from Raft and FSM
-		if s.IsLeader() {
-			if err := s.ApplyMemberLeave(nodeID); err != nil {
-				s.logger.Error("failed to apply member leave",
-					"node_id", nodeID,
-					"error", err)
-			}
-
-			// Remove from Raft cluster
-			if err := s.raft.RemoveServer(nodeID, 10*time.Second); err != nil {
-				s.logger.Error("failed to remove server",
-					"node_id", nodeID,
-					"error", err)
-			}
+		// Only leader processes membership changes
+		if !s.IsLeader() {
+			s.logger.Debug("ignoring leave - not leader", "node_id", nodeID)
+			return
 		}
+
+		// Step 1: Remove from Raft cluster first (fail fast)
+		// @req RQ-0401 § 2.1 - Raft must be source of truth for membership
+		if err := s.raft.RemoveServer(nodeID, s.config.Timeouts.RaftMembership); err != nil {
+			s.logger.Error("failed to remove server - aborting leave",
+				"node_id", nodeID,
+				"error", err)
+			return // Abort on Raft failure
+		}
+
+		// Step 2: Update FSM state
+		if err := s.ApplyMemberLeave(nodeID); err != nil {
+			s.logger.Error("failed to apply member leave - FSM inconsistent with Raft",
+				"node_id", nodeID,
+				"error", err,
+				"action", "FSM will eventually sync via snapshot")
+			// Note: We don't rollback Raft here because the node is genuinely gone from Gossip.
+			// FSM inconsistency will be resolved by periodic snapshots.
+			return
+		}
+
+		s.logger.Info("node leave completed successfully", "node_id", nodeID)
+
+		// Check cluster parity after successful leave
+		s.checkClusterParity()
 	})
 
 	// OnUpdate: When node metadata updates
@@ -513,6 +628,8 @@ func (s *Server) handleLeaderChange(isLeader bool) {
 	if isLeader && !wasLeader {
 		s.logger.Info("became leader", "node_id", s.config.NodeID)
 		s.onBecomeLeader()
+		// Check cluster parity when becoming leader
+		s.checkClusterParity()
 	} else if !isLeader && wasLeader {
 		s.logger.Info("lost leadership", "node_id", s.config.NodeID)
 		s.onLoseLeadership()
@@ -533,14 +650,35 @@ func (s *Server) onBecomeLeader() {
 		// TODO: Retrieve previous shard map from persistent state
 		// For now, trigger rebalance if we detect topology changes
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			// Create cancellable context
+			ctx, cancel := context.WithTimeout(context.Background(), s.config.Timeouts.Rebalance)
 			defer cancel()
 
-			// Wait a few seconds for cluster to stabilize after leadership change
-			time.Sleep(5 * time.Second)
+			// Wait a few seconds for cluster to stabilize, but respect server shutdown
+			select {
+			case <-time.After(5 * time.Second):
+				// Continue with rebalance
+			case <-s.stopCh:
+				s.logger.Info("auto-rebalance cancelled - server stopping")
+				return
+			}
 
-			if err := s.rebalanceManager.TriggerRebalance(ctx, currentMap, currentMap); err != nil {
-				s.logger.Error("auto-rebalance failed", "error", err)
+			// Create a context that cancels when server stops
+			rebalanceCtx, rebalanceCancel := context.WithCancel(ctx)
+			defer rebalanceCancel()
+
+			// Monitor server shutdown and cancel rebalance
+			go func() {
+				<-s.stopCh
+				rebalanceCancel()
+			}()
+
+			if err := s.rebalanceManager.TriggerRebalance(rebalanceCtx, currentMap, currentMap); err != nil {
+				if err == context.Canceled {
+					s.logger.Info("auto-rebalance cancelled")
+				} else {
+					s.logger.Error("auto-rebalance failed", "error", err)
+				}
 			}
 		}()
 	}
@@ -552,6 +690,30 @@ func (s *Server) onLoseLeadership() {
 	s.logger.Info("follower transition complete",
 		"node_id", s.config.NodeID,
 		"new_leader", s.leaderID)
+}
+
+// checkClusterParity checks if cluster has even number of nodes and warns.
+// @req RQ-0401 § 1.3.1.1 - Even-numbered cluster warning
+func (s *Server) checkClusterParity() {
+	members := s.fsm.GetMembers()
+	nodeCount := len(members)
+
+	if nodeCount%2 == 0 && nodeCount > 0 {
+		s.logger.Warn("cluster has even number of nodes - network partition may cause quorum loss",
+			"node_count", nodeCount,
+			"recommendation", "use odd numbers (3, 5, 7) for better fault tolerance",
+			"health", "DEGRADED")
+
+		// TODO: Set metrics when metrics system is implemented
+		// tokmesh_cluster_nodes_parity = 1 (even)
+	} else if nodeCount > 0 {
+		s.logger.Debug("cluster has odd number of nodes",
+			"node_count", nodeCount,
+			"health", "OK")
+
+		// TODO: Set metrics when metrics system is implemented
+		// tokmesh_cluster_nodes_parity = 0 (odd)
+	}
 }
 
 // waitForLeader waits for a leader to be elected.
@@ -599,25 +761,177 @@ func (cfg *Config) validate() error {
 		return errors.New("raft_data_dir is required")
 	}
 
+	// Validate Bootstrap and SeedNodes mutual exclusivity
+	if cfg.Bootstrap && len(cfg.SeedNodes) > 0 {
+		return errors.New("bootstrap mode should not specify seed_nodes (mutually exclusive)")
+	}
+
+	// Validate ReplicationFactor bounds
 	if cfg.ReplicationFactor < 1 {
 		cfg.ReplicationFactor = 1 // Default to 1 replica
+	}
+	if cfg.ReplicationFactor > 7 {
+		return fmt.Errorf("replication_factor must be 1-7, got %d (higher values may impact performance)", cfg.ReplicationFactor)
+	}
+
+	// Validate Storage dependency for rebalance
+	if cfg.Rebalance.ConcurrentShards > 0 && cfg.Storage == nil {
+		return errors.New("storage is required when rebalance is enabled (rebalance.concurrent_shards > 0)")
+	}
+
+	// Set default timeout values if not configured
+	// @req RQ-0401 § 2.4 - Default timeout values with configurability
+	if cfg.Timeouts.RaftApply == 0 {
+		cfg.Timeouts.RaftApply = 5 * time.Second
+	}
+	if cfg.Timeouts.RaftMembership == 0 {
+		cfg.Timeouts.RaftMembership = 10 * time.Second
+	}
+	if cfg.Timeouts.RaftTransport == 0 {
+		cfg.Timeouts.RaftTransport = 10 * time.Second
+	}
+	if cfg.Timeouts.StreamingRPC == 0 {
+		cfg.Timeouts.StreamingRPC = 10 * time.Minute
+	}
+	if cfg.Timeouts.WaitLeader == 0 {
+		cfg.Timeouts.WaitLeader = 10 * time.Second
+	}
+	if cfg.Timeouts.Rebalance == 0 {
+		cfg.Timeouts.Rebalance = 30 * time.Minute
 	}
 
 	return nil
 }
 
+// replicationMonitorLoop monitors shard replication health.
+//
+// This goroutine runs periodically to detect under-replicated shards and logs warnings.
+// @req RQ-0401 § 2.3 - Replication health monitoring for high availability
+func (s *Server) replicationMonitorLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	s.logger.Info("replication monitor started",
+		"check_interval", "30s",
+		"target_replicas", s.config.ReplicationFactor)
+
+	for {
+		select {
+		case <-ticker.C:
+			s.checkReplicationHealth()
+		case <-s.stopCh:
+			s.logger.Info("replication monitor stopped")
+			return
+		}
+	}
+}
+
+// checkReplicationHealth checks if all shards meet replication requirements.
+func (s *Server) checkReplicationHealth() {
+	// Only perform check if we're the leader
+	if !s.raft.IsLeader() {
+		return
+	}
+
+	// Get current shard map
+	currentMap := s.fsm.GetShardMap()
+	if currentMap == nil {
+		s.logger.Warn("replication check skipped - shard map not initialized")
+		return
+	}
+
+	// Get cluster members
+	members := s.fsm.GetMembers()
+	if len(members) == 0 {
+		s.logger.Warn("replication check skipped - no cluster members")
+		return
+	}
+
+	// Count under-replicated shards
+	underReplicated := 0
+	totalShards := 0
+
+	// Check each shard
+	for shardID := uint32(0); shardID < DefaultShardCount; shardID++ {
+		owner, exists := currentMap.GetShard(shardID)
+		if !exists {
+			// Unassigned shard
+			s.logger.Warn("shard has no owner (unassigned)",
+				"shard_id", shardID,
+				"target_replicas", s.config.ReplicationFactor,
+				"actual_replicas", 0,
+				"health", "CRITICAL")
+			underReplicated++
+			totalShards++
+			continue
+		}
+
+		// Get replica list for this shard
+		replicas := currentMap.GetReplicas(shardID)
+		actualReplicas := len(replicas)
+		totalShards++
+
+		// Check if under-replicated
+		if actualReplicas < int(s.config.ReplicationFactor) {
+			s.logger.Warn("shard is under-replicated",
+				"shard_id", shardID,
+				"owner", owner,
+				"target_replicas", s.config.ReplicationFactor,
+				"actual_replicas", actualReplicas,
+				"replicas", replicas,
+				"health", "DEGRADED")
+			underReplicated++
+		}
+	}
+
+	// Log summary
+	if underReplicated > 0 {
+		s.logger.Warn("replication health check completed - issues detected",
+			"total_shards", totalShards,
+			"under_replicated_count", underReplicated,
+			"healthy_count", totalShards-underReplicated,
+			"cluster_members", len(members),
+			"health", "DEGRADED")
+	} else {
+		s.logger.Debug("replication health check completed - all shards healthy",
+			"total_shards", totalShards,
+			"cluster_members", len(members),
+			"health", "OK")
+	}
+}
+
 // createRPCClient creates a Connect RPC client for cluster communication.
 //
 // This is used by the rebalance manager to connect to target nodes.
+// @req RQ-0401 § 3.1.3 - Cluster communication must use mTLS in production
 func (s *Server) createRPCClient(addr string) (clusterv1connect.ClusterServiceClient, error) {
+	// Create HTTP transport with optional TLS
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
+	// Configure TLS if available
+	var scheme string
+	if s.config.TLSConfig != nil {
+		transport.TLSClientConfig = s.config.TLSConfig
+		scheme = "https"
+	} else {
+		// Warn when TLS is not configured (dev/testing only)
+		s.logger.Warn("cluster RPC client created without TLS - not recommended for production",
+			"target_addr", addr)
+		scheme = "http"
+	}
+
 	// Create HTTP client
-	// TODO: Configure TLS for production deployments
 	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout:   30 * time.Second,
+		Transport: transport,
 	}
 
 	// Create Connect client
-	baseURL := fmt.Sprintf("http://%s", addr)
+	baseURL := fmt.Sprintf("%s://%s", scheme, addr)
 	client := clusterv1connect.NewClusterServiceClient(httpClient, baseURL, connect.WithGRPC())
 
 	return client, nil

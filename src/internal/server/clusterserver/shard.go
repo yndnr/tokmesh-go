@@ -5,9 +5,11 @@
 package clusterserver
 
 import (
-	"hash/fnv"
+	"encoding/binary"
 	"sort"
 	"sync"
+
+	"github.com/spaolacci/murmur3"
 )
 
 const (
@@ -15,7 +17,8 @@ const (
 	DefaultShardCount = 256
 
 	// DefaultVirtualNodeCount is the default number of virtual nodes per physical node.
-	DefaultVirtualNodeCount = 100
+	// @req RQ-0401 § 1.1 - Each physical node corresponds to 256 virtual nodes.
+	DefaultVirtualNodeCount = 256
 )
 
 // ShardMap manages shard assignments and routing.
@@ -79,11 +82,10 @@ func (m *ShardMap) GetShardForKey(key string) (uint32, string, bool) {
 	return shardID, nodeID, ok
 }
 
-// HashKey computes the shard ID for a key using FNV-1a hash.
+// HashKey computes the shard ID for a key using MurmurHash3.
+// @req RQ-0401 § 1.1 - Hash function: MurmurHash3
 func (m *ShardMap) HashKey(key string) uint32 {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return h.Sum32() % DefaultShardCount
+	return murmur3.Sum32([]byte(key)) % DefaultShardCount
 }
 
 // AddNode adds a node to the consistent hash ring.
@@ -147,11 +149,17 @@ func (m *ShardMap) GetNodeForHash(hash uint64) (string, bool) {
 	return nodeID, true
 }
 
-// hashVirtualNode computes the hash for a virtual node.
+// hashVirtualNode computes the hash for a virtual node using MurmurHash3.
+// @req RQ-0401 § 1.1 - Hash function: MurmurHash3
 func (m *ShardMap) hashVirtualNode(nodeID string, virtualIndex int) uint64 {
-	h := fnv.New64a()
+	h := murmur3.New64()
 	h.Write([]byte(nodeID))
-	h.Write([]byte{byte(virtualIndex >> 24), byte(virtualIndex >> 16), byte(virtualIndex >> 8), byte(virtualIndex)})
+
+	// Encode virtual index as 4 bytes
+	indexBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(indexBytes, uint32(virtualIndex))
+	h.Write(indexBytes)
+
 	return h.Sum64()
 }
 
@@ -196,6 +204,22 @@ func (m *ShardMap) Clone() *ShardMap {
 	copy(clone.SortedHashes, m.SortedHashes)
 
 	return clone
+}
+
+// GetReplicas returns the replica node IDs for a shard.
+func (m *ShardMap) GetReplicas(shardID uint32) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	replicas, ok := m.Replicas[shardID]
+	if !ok {
+		return nil
+	}
+
+	// Return a copy to prevent external modification
+	result := make([]string, len(replicas))
+	copy(result, replicas)
+	return result
 }
 
 // GetReplicationFactor returns the replication factor for a shard.

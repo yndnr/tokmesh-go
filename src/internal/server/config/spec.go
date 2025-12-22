@@ -56,10 +56,48 @@ type SecuritySection struct {
 	TLSCAFile     string `koanf:"tls_ca_file"`
 }
 
-// ClusterSection configures cluster behavior.
+// ClusterSection configures cluster mode settings.
+//
+// @req RQ-0401 - Cluster configuration
 type ClusterSection struct {
-	NodeID string   `koanf:"node_id"`
-	Seeds  []string `koanf:"seeds"`
+	// NodeID is the unique identifier for this cluster node.
+	// If empty, a random ID will be generated at startup.
+	NodeID string `koanf:"node_id"`
+
+	// RaftAddr is the Raft TCP bind address (e.g., "192.168.1.10:5343").
+	RaftAddr string `koanf:"raft_addr"`
+
+	// GossipAddr is the Gossip TCP/UDP bind address (e.g., "192.168.1.10").
+	GossipAddr string `koanf:"gossip_addr"`
+
+	// GossipPort is the Gossip bind port (e.g., 5344).
+	GossipPort int `koanf:"gossip_port"`
+
+	// Bootstrap indicates if this node bootstraps a new cluster.
+	// Mutually exclusive with Seeds.
+	Bootstrap bool `koanf:"bootstrap"`
+
+	// Seeds is the list of seed node addresses to join an existing cluster.
+	// Format: ["192.168.1.10:5344", "192.168.1.11:5344"]
+	Seeds []string `koanf:"seeds"`
+
+	// DataDir is the directory for Raft log and snapshot storage.
+	DataDir string `koanf:"data_dir"`
+
+	// ReplicationFactor is the number of replicas per shard (1-7).
+	ReplicationFactor int `koanf:"replication_factor"`
+
+	// RebalanceMaxRateMBps is the maximum bandwidth for rebalancing (MB/s).
+	// Default: 20 MB/s
+	RebalanceMaxRateMBps int `koanf:"rebalance_max_rate_mbps"`
+
+	// RebalanceMinTTL is the minimum remaining TTL for sessions to be migrated.
+	// Default: 60s
+	RebalanceMinTTL time.Duration `koanf:"rebalance_min_ttl"`
+
+	// RebalanceConcurrentQty is the number of shards to migrate in parallel.
+	// Default: 3
+	RebalanceConcurrentQty int `koanf:"rebalance_concurrent_qty"`
 }
 
 // LogSection configures logging.

@@ -3,9 +3,12 @@ package clusterserver
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/raft"
@@ -228,13 +231,22 @@ func TestApply_UnknownType(t *testing.T) {
 		Data:  mustMarshalJSON(t, logEntry),
 	}
 
-	// Apply the log
-	result := fsm.Apply(raftLog)
+	// Apply should panic for unknown log type
+	// @req RQ-0401 § 2.2 - FSM must panic on unrecoverable errors
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Apply should panic for unknown log type")
+		} else {
+			// Verify panic message contains expected info
+			msg := fmt.Sprint(r)
+			if !strings.Contains(msg, "unknown log type") {
+				t.Errorf("panic message should mention unknown log type, got: %v", r)
+			}
+		}
+	}()
 
-	// Verify error returned
-	if _, ok := result.(error); !ok {
-		t.Error("Apply should return error for unknown type")
-	}
+	// This should panic
+	fsm.Apply(raftLog)
 }
 
 func TestApply_InvalidJSON(t *testing.T) {
@@ -248,13 +260,22 @@ func TestApply_InvalidJSON(t *testing.T) {
 		Data:  []byte("invalid json"),
 	}
 
-	// Apply the log
-	result := fsm.Apply(raftLog)
+	// Apply should panic for invalid JSON (data corruption)
+	// @req RQ-0401 § 2.2 - FSM must panic on unrecoverable errors
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Apply should panic for invalid JSON")
+		} else {
+			// Verify panic message indicates unmarshal failure
+			msg := fmt.Sprint(r)
+			if !strings.Contains(msg, "unmarshal") {
+				t.Errorf("panic message should mention unmarshal, got: %v", r)
+			}
+		}
+	}()
 
-	// Verify error returned
-	if _, ok := result.(error); !ok {
-		t.Error("Apply should return error for invalid JSON")
-	}
+	// This should panic
+	fsm.Apply(raftLog)
 }
 
 func TestApply_InvalidPayload(t *testing.T) {
@@ -366,10 +387,14 @@ func TestRestore(t *testing.T) {
 		State:    "alive",
 	}
 
-	// Encode snapshot
+	// Encode snapshot with gzip compression (matching Persist behavior)
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(state); err != nil {
+	gzWriter := gzip.NewWriter(&buf)
+	if err := json.NewEncoder(gzWriter).Encode(state); err != nil {
 		t.Fatalf("Failed to encode snapshot: %v", err)
+	}
+	if err := gzWriter.Close(); err != nil {
+		t.Fatalf("Failed to close gzip writer: %v", err)
 	}
 
 	// Restore from snapshot
@@ -534,14 +559,21 @@ func TestFSMSnapshot_Persist(t *testing.T) {
 		t.Error("No data written to sink")
 	}
 
-	// Verify data is valid JSON
+	// Verify data is valid gzip-compressed JSON
+	// First decompress the gzip data
+	gzReader, err := gzip.NewReader(sink.buf)
+	if err != nil {
+		t.Fatalf("Failed to create gzip reader: %v", err)
+	}
+	defer gzReader.Close()
+
 	var state struct {
 		ShardMap *ShardMap          `json:"shard_map"`
 		Members  map[string]*Member `json:"members"`
 	}
 
-	if err := json.NewDecoder(sink.buf).Decode(&state); err != nil {
-		t.Errorf("Persisted data is not valid JSON: %v", err)
+	if err := json.NewDecoder(gzReader).Decode(&state); err != nil {
+		t.Errorf("Persisted data is not valid gzip-compressed JSON: %v", err)
 	}
 
 	// Verify state content

@@ -36,10 +36,7 @@ func BenchmarkWALAppend(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		entry, err := wal.NewCreateEntry(session)
-		if err != nil {
-			b.Fatalf("NewCreateEntry failed: %v", err)
-		}
+		entry := wal.NewCreateEntry(session)
 		if err := w.Append(entry); err != nil {
 			b.Fatalf("Append failed: %v", err)
 		}
@@ -72,10 +69,7 @@ func BenchmarkWALAppendWithSync(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		entry, err := wal.NewCreateEntry(session)
-		if err != nil {
-			b.Fatalf("NewCreateEntry failed: %v", err)
-		}
+		entry := wal.NewCreateEntry(session)
 		if err := w.Append(entry); err != nil {
 			b.Fatalf("Append failed: %v", err)
 		}
@@ -108,10 +102,7 @@ func BenchmarkWALRecover(b *testing.B) {
 
 			for i := 0; i < count; i++ {
 				session := createSession(fmt.Sprintf("user-%d", i))
-				entry, err := wal.NewCreateEntry(session)
-				if err != nil {
-					b.Fatalf("NewCreateEntry failed: %v", err)
-				}
+				entry := wal.NewCreateEntry(session)
 				w.Append(entry)
 			}
 			w.Close()
@@ -175,14 +166,11 @@ func BenchmarkWALMixedOperations(b *testing.B) {
 
 		switch i % 3 {
 		case 0:
-			entry, err = wal.NewCreateEntry(session)
+			entry = wal.NewCreateEntry(session)
 		case 1:
-			entry, err = wal.NewUpdateEntry(session)
+			entry = wal.NewUpdateEntry(session)
 		case 2:
-			entry, err = wal.NewDeleteEntry(session.ID)
-		}
-		if err != nil {
-			b.Fatalf("build entry failed: %v", err)
+			entry = wal.NewDeleteEntry(session.ID)
 		}
 
 		if err := w.Append(entry); err != nil {
@@ -216,10 +204,7 @@ func BenchmarkWALFileRotation(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		session := createSession(fmt.Sprintf("user-%d", i))
-		entry, err := wal.NewCreateEntry(session)
-		if err != nil {
-			b.Fatalf("NewCreateEntry failed: %v", err)
-		}
+		entry := wal.NewCreateEntry(session)
 
 		if err := w.Append(entry); err != nil {
 			b.Fatalf("Append failed: %v", err)

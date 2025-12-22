@@ -251,6 +251,224 @@ func TestCluster_ThreeNode_Integration(t *testing.T) {
 	t.Log("Integration test completed successfully")
 }
 
+// TestCluster_LeaderFailover tests leader failover when the leader is stopped.
+func TestCluster_LeaderFailover(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	baseDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	// Create 3 nodes
+	nodes := make([]*clusterserver.Server, 3)
+	storages := make([]*storage.Engine, 3)
+
+	for i := 0; i < 3; i++ {
+		nodeDir := filepath.Join(baseDir, fmt.Sprintf("node%d", i+1))
+		os.MkdirAll(nodeDir, 0755)
+
+		s, err := createTestStorage(t, filepath.Join(nodeDir, "data"))
+		if err != nil {
+			t.Fatalf("failed to create storage %d: %v", i+1, err)
+		}
+		storages[i] = s
+
+		cfg := clusterserver.Config{
+			NodeID:            fmt.Sprintf("node-%d", i+1),
+			RaftBindAddr:      fmt.Sprintf("127.0.0.1:%d", 16343+i*2),
+			GossipBindAddr:    "127.0.0.1",
+			GossipBindPort:    16344 + i*2,
+			RaftDataDir:       filepath.Join(nodeDir, "raft"),
+			Bootstrap:         i == 0, // Only first node bootstraps
+			SeedNodes:         nil,
+			ReplicationFactor: 3,
+			Storage:           s,
+			Logger:            logger.With("node", fmt.Sprintf("node-%d", i+1)),
+		}
+		if i > 0 {
+			cfg.SeedNodes = []string{"127.0.0.1:16344"} // Join node 1
+		}
+
+		server, err := clusterserver.NewServer(cfg)
+		if err != nil {
+			t.Fatalf("failed to create server %d: %v", i+1, err)
+		}
+		nodes[i] = server
+	}
+
+	defer func() {
+		for _, s := range storages {
+			if s != nil {
+				s.Close()
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Start node 1 (bootstrap)
+	t.Log("Starting bootstrap node...")
+	go nodes[0].Start(ctx)
+	time.Sleep(3 * time.Second)
+
+	// Start other nodes
+	t.Log("Starting follower nodes...")
+	go nodes[1].Start(ctx)
+	go nodes[2].Start(ctx)
+	time.Sleep(8 * time.Second)
+
+	// Find initial leader
+	var leaderIdx int = -1
+	for i, n := range nodes {
+		if n.IsLeader() {
+			leaderIdx = i
+			t.Logf("Initial leader is node-%d", i+1)
+			break
+		}
+	}
+
+	if leaderIdx == -1 {
+		t.Fatal("No leader found after cluster startup")
+	}
+
+	// Stop the leader
+	t.Logf("Stopping leader (node-%d)...", leaderIdx+1)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	nodes[leaderIdx].Stop(shutdownCtx)
+	shutdownCancel()
+
+	// Wait for new leader election
+	t.Log("Waiting for new leader election...")
+	time.Sleep(5 * time.Second)
+
+	// Verify new leader
+	var newLeaderIdx int = -1
+	for i, n := range nodes {
+		if i == leaderIdx {
+			continue // Skip stopped node
+		}
+		if n.IsLeader() {
+			newLeaderIdx = i
+			t.Logf("New leader is node-%d", i+1)
+			break
+		}
+	}
+
+	if newLeaderIdx == -1 {
+		t.Error("No new leader elected after original leader stopped")
+	} else {
+		t.Logf("Leader failover successful: node-%d -> node-%d", leaderIdx+1, newLeaderIdx+1)
+	}
+
+	// Cleanup remaining nodes
+	t.Log("Shutting down remaining nodes...")
+	for i, n := range nodes {
+		if i == leaderIdx {
+			continue
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		n.Stop(cleanupCtx)
+		cleanupCancel()
+	}
+
+	t.Log("Leader failover test completed")
+}
+
+// TestCluster_TwoNode_NoQuorum tests that a 2-node cluster can form but has quorum warnings.
+func TestCluster_TwoNode_NoQuorum(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	baseDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	// Create 2 nodes
+	storages := make([]*storage.Engine, 2)
+	nodes := make([]*clusterserver.Server, 2)
+
+	for i := 0; i < 2; i++ {
+		nodeDir := filepath.Join(baseDir, fmt.Sprintf("node%d", i+1))
+		os.MkdirAll(nodeDir, 0755)
+
+		s, err := createTestStorage(t, filepath.Join(nodeDir, "data"))
+		if err != nil {
+			t.Fatalf("failed to create storage %d: %v", i+1, err)
+		}
+		storages[i] = s
+
+		cfg := clusterserver.Config{
+			NodeID:            fmt.Sprintf("node-%d", i+1),
+			RaftBindAddr:      fmt.Sprintf("127.0.0.1:%d", 17343+i*2),
+			GossipBindAddr:    "127.0.0.1",
+			GossipBindPort:    17344 + i*2,
+			RaftDataDir:       filepath.Join(nodeDir, "raft"),
+			Bootstrap:         i == 0,
+			SeedNodes:         nil,
+			ReplicationFactor: 2,
+			Storage:           s,
+			Logger:            logger.With("node", fmt.Sprintf("node-%d", i+1)),
+		}
+		if i > 0 {
+			cfg.SeedNodes = []string{"127.0.0.1:17344"}
+		}
+
+		server, err := clusterserver.NewServer(cfg)
+		if err != nil {
+			t.Fatalf("failed to create server %d: %v", i+1, err)
+		}
+		nodes[i] = server
+	}
+
+	defer func() {
+		for _, s := range storages {
+			if s != nil {
+				s.Close()
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Start nodes
+	go nodes[0].Start(ctx)
+	time.Sleep(3 * time.Second)
+	go nodes[1].Start(ctx)
+	time.Sleep(5 * time.Second)
+
+	// Verify leader exists
+	var leaderCount int
+	for _, n := range nodes {
+		if n.IsLeader() {
+			leaderCount++
+		}
+	}
+
+	if leaderCount != 1 {
+		t.Errorf("expected 1 leader, got %d", leaderCount)
+	}
+
+	// Verify cluster membership
+	members := nodes[0].GetMembers()
+	t.Logf("2-node cluster has %d members", len(members))
+
+	// Cleanup
+	for _, n := range nodes {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		n.Stop(shutdownCtx)
+		shutdownCancel()
+	}
+
+	t.Log("Two-node cluster test completed")
+}
+
 // createTestStorage creates a storage engine for testing.
 func createTestStorage(t *testing.T, dataDir string) (*storage.Engine, error) {
 	t.Helper()

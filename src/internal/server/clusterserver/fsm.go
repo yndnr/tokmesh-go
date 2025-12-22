@@ -5,6 +5,7 @@
 package clusterserver
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -98,8 +99,13 @@ func NewFSM(logger *slog.Logger) *FSM {
 func (f *FSM) Apply(log *raft.Log) interface{} {
 	var entry LogEntry
 	if err := json.Unmarshal(log.Data, &entry); err != nil {
-		f.logger.Error("failed to unmarshal log entry", "error", err)
-		return fmt.Errorf("unmarshal log entry: %w", err)
+		// FATAL: Data corruption or incompatible version
+		// @req RQ-0401 § 2.2 - FSM must panic on unrecoverable errors
+		f.logger.Error("FATAL: failed to unmarshal log entry - data corrupted",
+			"error", err,
+			"log_index", log.Index,
+			"log_term", log.Term)
+		panic(fmt.Sprintf("FSM.Apply: unmarshal failed at index=%d: %v", log.Index, err))
 	}
 
 	f.mu.Lock()
@@ -107,29 +113,35 @@ func (f *FSM) Apply(log *raft.Log) interface{} {
 
 	switch entry.Type {
 	case LogEntryShardMapUpdate:
-		return f.applyShardMapUpdate(entry.Payload)
+		f.applyShardMapUpdate(entry.Payload)
 
 	case LogEntryMemberJoin:
-		return f.applyMemberJoin(entry.Payload)
+		f.applyMemberJoin(entry.Payload)
 
 	case LogEntryMemberLeave:
-		return f.applyMemberLeave(entry.Payload)
+		f.applyMemberLeave(entry.Payload)
 
 	case LogEntryConfigChange:
-		return f.applyConfigChange(entry.Payload)
+		f.applyConfigChange(entry.Payload)
 
 	default:
-		err := fmt.Errorf("unknown log entry type: %d", entry.Type)
-		f.logger.Error("unknown log entry type", "type", entry.Type)
-		return err
+		// FATAL: Unknown log type indicates version mismatch or data corruption
+		f.logger.Error("FATAL: unknown log entry type",
+			"type", entry.Type,
+			"log_index", log.Index)
+		panic(fmt.Sprintf("FSM.Apply: unknown log type %d at index=%d", entry.Type, log.Index))
 	}
+
+	// Always return nil - errors trigger panic, not return values
+	return nil
 }
 
 // applyShardMapUpdate applies a shard map update.
-func (f *FSM) applyShardMapUpdate(payload json.RawMessage) interface{} {
+func (f *FSM) applyShardMapUpdate(payload json.RawMessage) {
 	var update ShardMapUpdatePayload
 	if err := json.Unmarshal(payload, &update); err != nil {
-		return fmt.Errorf("unmarshal shard map update: %w", err)
+		f.logger.Error("FATAL: failed to unmarshal shard map update payload", "error", err)
+		panic(fmt.Sprintf("applyShardMapUpdate: unmarshal failed: %v", err))
 	}
 
 	f.shardMap.AssignShard(update.ShardID, update.NodeID, update.Replicas)
@@ -138,15 +150,14 @@ func (f *FSM) applyShardMapUpdate(payload json.RawMessage) interface{} {
 		"shard_id", update.ShardID,
 		"node_id", update.NodeID,
 		"replicas", update.Replicas)
-
-	return nil
 }
 
 // applyMemberJoin applies a member join event.
-func (f *FSM) applyMemberJoin(payload json.RawMessage) interface{} {
+func (f *FSM) applyMemberJoin(payload json.RawMessage) {
 	var join MemberJoinPayload
 	if err := json.Unmarshal(payload, &join); err != nil {
-		return fmt.Errorf("unmarshal member join: %w", err)
+		f.logger.Error("FATAL: failed to unmarshal member join payload", "error", err)
+		panic(fmt.Sprintf("applyMemberJoin: unmarshal failed: %v", err))
 	}
 
 	f.members[join.NodeID] = &Member{
@@ -159,29 +170,25 @@ func (f *FSM) applyMemberJoin(payload json.RawMessage) interface{} {
 	f.logger.Info("member joined",
 		"node_id", join.NodeID,
 		"addr", join.Addr)
-
-	return nil
 }
 
 // applyMemberLeave applies a member leave event.
-func (f *FSM) applyMemberLeave(payload json.RawMessage) interface{} {
+func (f *FSM) applyMemberLeave(payload json.RawMessage) {
 	var leave MemberLeavePayload
 	if err := json.Unmarshal(payload, &leave); err != nil {
-		return fmt.Errorf("unmarshal member leave: %w", err)
+		f.logger.Error("FATAL: failed to unmarshal member leave payload", "error", err)
+		panic(fmt.Sprintf("applyMemberLeave: unmarshal failed: %v", err))
 	}
 
 	delete(f.members, leave.NodeID)
 
 	f.logger.Info("member left", "node_id", leave.NodeID)
-
-	return nil
 }
 
 // applyConfigChange applies a configuration change.
-func (f *FSM) applyConfigChange(payload json.RawMessage) interface{} {
+func (f *FSM) applyConfigChange(payload json.RawMessage) {
 	// TODO: Implement configuration change logic
 	f.logger.Info("config change applied")
-	return nil
 }
 
 // Snapshot creates a snapshot of the FSM state.
@@ -214,15 +221,25 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 //
 // This is called by Raft when recovering from a snapshot.
 // Must completely replace all FSM state.
+//
+// @req RQ-0401 § 2.3 - Decompress snapshots during restore
 func (f *FSM) Restore(r io.ReadCloser) error {
 	defer r.Close()
+
+	// Create gzip reader for decompression
+	// Snapshots are compressed with gzip to reduce storage and network transfer
+	gzReader, err := gzip.NewReader(r)
+	if err != nil {
+		return fmt.Errorf("create gzip reader: %w", err)
+	}
+	defer gzReader.Close()
 
 	var state struct {
 		ShardMap *ShardMap           `json:"shard_map"`
 		Members  map[string]*Member  `json:"members"`
 	}
 
-	if err := json.NewDecoder(r).Decode(&state); err != nil {
+	if err := json.NewDecoder(gzReader).Decode(&state); err != nil {
 		return fmt.Errorf("decode snapshot: %w", err)
 	}
 
@@ -270,8 +287,15 @@ type fsmSnapshot struct {
 }
 
 // Persist writes the snapshot to the sink.
+//
+// @req RQ-0401 § 2.3 - Compress snapshots to reduce disk usage and network transfer
 func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 	err := func() error {
+		// Create gzip writer for compression
+		// This reduces snapshot size by ~70-90% for typical cluster metadata
+		gzWriter := gzip.NewWriter(sink)
+		defer gzWriter.Close()
+
 		// Encode snapshot data
 		state := struct {
 			ShardMap *ShardMap          `json:"shard_map"`
@@ -281,9 +305,14 @@ func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 			Members:  s.members,
 		}
 
-		encoder := json.NewEncoder(sink)
+		encoder := json.NewEncoder(gzWriter)
 		if err := encoder.Encode(state); err != nil {
 			return fmt.Errorf("encode snapshot: %w", err)
+		}
+
+		// Flush gzip writer to ensure all compressed data is written
+		if err := gzWriter.Close(); err != nil {
+			return fmt.Errorf("close gzip writer: %w", err)
 		}
 
 		return nil

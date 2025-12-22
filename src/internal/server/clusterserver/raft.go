@@ -33,6 +33,10 @@ type RaftConfig struct {
 	// Bootstrap indicates if this is the bootstrap node.
 	Bootstrap bool
 
+	// TransportTimeout is the timeout for Raft TCP transport connections.
+	// Default: 10s
+	TransportTimeout time.Duration
+
 	// Logger for logging.
 	Logger *slog.Logger
 }
@@ -64,6 +68,11 @@ func NewRaftNode(cfg RaftConfig, fsm *FSM) (*RaftNode, error) {
 		return nil, fmt.Errorf("raft: data_dir is required")
 	}
 
+	// Set default timeout if not configured
+	if cfg.TransportTimeout == 0 {
+		cfg.TransportTimeout = 10 * time.Second
+	}
+
 	// Create data directory
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -86,7 +95,7 @@ func NewRaftNode(cfg RaftConfig, fsm *FSM) (*RaftNode, error) {
 		return nil, fmt.Errorf("resolve bind addr: %w", err)
 	}
 
-	transport, err := raft.NewTCPTransport(cfg.BindAddr, addr, 3, 10*time.Second, os.Stderr)
+	transport, err := raft.NewTCPTransport(cfg.BindAddr, addr, 3, cfg.TransportTimeout, os.Stderr)
 	if err != nil {
 		return nil, fmt.Errorf("create transport: %w", err)
 	}
@@ -254,16 +263,30 @@ func (n *RaftNode) Stats() map[string]string {
 }
 
 // Close gracefully shuts down the Raft node.
+//
+// Shutdown order is critical to prevent channel panics:
+// 1. Stop Raft (prevents new events to NotifyCh/leaderCh)
+// 2. Close leaderCh (safe now that no more events will arrive)
+// 3. Close stores and transport (cleanup resources)
+//
+// @req RQ-0401 § 2.2 - Graceful shutdown without resource leaks
 func (n *RaftNode) Close() error {
 	n.logger.Info("shutting down raft node")
 
-	// Shutdown Raft (this will flush pending writes)
-	if err := n.raft.Shutdown().Error(); err != nil {
+	// Step 1: Shutdown Raft and wait for completion
+	// This stops all Raft operations and ensures no more events sent to NotifyCh
+	shutdownFuture := n.raft.Shutdown()
+	if err := shutdownFuture.Error(); err != nil {
 		n.logger.Error("raft shutdown failed", "error", err)
+		// Continue with cleanup even if shutdown failed
 	}
 
-	// Close stores (Note: FileSnapshotStore does not have Close method)
-	// BoltStore implements Close() method
+	// Step 2: Close leaderCh now that Raft is stopped
+	// This is safe because Raft will no longer send events to this channel
+	close(n.leaderCh)
+
+	// Step 3: Close storage resources
+	// Note: FileSnapshotStore does not have Close method, BoltStore does
 	if s, ok := n.stableStore.(*raftboltdb.BoltStore); ok {
 		if err := s.Close(); err != nil {
 			n.logger.Error("close stable store failed", "error", err)
@@ -276,12 +299,10 @@ func (n *RaftNode) Close() error {
 		}
 	}
 
-	// Close transport
+	// Step 4: Close transport
 	if err := n.transport.Close(); err != nil {
 		n.logger.Error("close transport failed", "error", err)
 	}
-
-	close(n.leaderCh)
 
 	n.logger.Info("raft node shutdown complete")
 	return nil

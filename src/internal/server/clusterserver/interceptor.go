@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -96,7 +98,11 @@ func (i *LoggingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 //   - Certificate must be signed by the cluster CA
 //   - Certificate CN (Common Name) must be a valid cluster node ID
 //   - Certificate must not be expired or revoked
+//
+// @req RQ-0401 § 2.2 - Thread-safe node ID list updates
 type AuthInterceptor struct {
+	mu sync.RWMutex // Protects allowedNodes map
+
 	logger *slog.Logger
 
 	// Client CA pool for verifying client certificates
@@ -104,6 +110,7 @@ type AuthInterceptor struct {
 
 	// Allowed node IDs (populated from cluster membership)
 	// If nil, all valid certificates are accepted (for bootstrap scenarios)
+	// MUST be accessed with mu held
 	allowedNodes map[string]bool
 
 	// Whether to enforce strict node ID checking
@@ -228,8 +235,13 @@ func (i *AuthInterceptor) authenticate(ctx context.Context, peer connect.Peer) e
 	}
 
 	// Check node ID is allowed (if strict mode enabled)
-	if i.strictNodeIDCheck && i.allowedNodes != nil {
-		if !i.allowedNodes[nodeID] {
+	// Use RLock for concurrent-safe read access
+	if i.strictNodeIDCheck {
+		i.mu.RLock()
+		allowedNodes := i.allowedNodes
+		i.mu.RUnlock()
+
+		if allowedNodes != nil && !allowedNodes[nodeID] {
 			return fmt.Errorf("node ID %q not in allowed list", nodeID)
 		}
 	}
@@ -243,27 +255,35 @@ func (i *AuthInterceptor) authenticate(ctx context.Context, peer connect.Peer) e
 	return nil
 }
 
-// extractTLSInfo extracts TLS connection state from the peer.
+// tlsStateKey is the context key for TLS connection state.
+// This should be set by the HTTP server when handling TLS connections.
+type tlsStateKey struct{}
+
+// extractTLSInfo extracts TLS connection state from the context.
+//
+// IMPORTANT: For this to work, the HTTP server must inject TLS state into the context.
+// This should be done using middleware in the HTTP handler chain.
+//
+// Example middleware:
+//
+//	func tlsMiddleware(next http.Handler) http.Handler {
+//	    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+//	        if r.TLS != nil {
+//	            ctx := context.WithValue(r.Context(), tlsStateKey{}, r.TLS)
+//	            r = r.WithContext(ctx)
+//	        }
+//	        next.ServeHTTP(w, r)
+//	    })
+//	}
 func (i *AuthInterceptor) extractTLSInfo(ctx context.Context, peer connect.Peer) (*tls.ConnectionState, error) {
-	// Try to get TLS info from peer address
-	// This works when the underlying transport is TLS
-	addr := peer.Addr
-	if addr == "" {
-		return nil, errors.New("peer address is empty")
-	}
-
-	// For HTTP/2 over TLS, the peer should be a net.Conn
-	// We need to type assert to get the TLS connection state
-	// Note: This is a simplified approach - in production you might need
-	// to extract this from context or use a different method
-
-	// Check if context has TLS state
-	if tlsState, ok := ctx.Value("tls.ConnectionState").(*tls.ConnectionState); ok {
+	// Try to get TLS state from context (injected by HTTP middleware)
+	if tlsState, ok := ctx.Value(tlsStateKey{}).(*tls.ConnectionState); ok {
 		return tlsState, nil
 	}
 
-	// Fallback: return error if we can't extract TLS info
-	return nil, errors.New("cannot extract TLS connection state from peer")
+	// If TLS state not found in context, authentication cannot proceed
+	// This indicates TLS middleware is not configured or connection is not TLS
+	return nil, errors.New("TLS connection state not available - ensure TLS middleware is configured")
 }
 
 // verifyCertificate verifies the client certificate against the cluster CA.
@@ -301,7 +321,11 @@ func (i *AuthInterceptor) verifyCertificate(cert *x509.Certificate) error {
 // UpdateAllowedNodes updates the list of allowed node IDs.
 //
 // This should be called when cluster membership changes.
+// Thread-safe: uses mutex to prevent data races during updates.
 func (i *AuthInterceptor) UpdateAllowedNodes(nodes map[string]bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
 	i.allowedNodes = nodes
 	i.logger.Info("updated allowed nodes", "count", len(nodes))
 }
@@ -381,4 +405,29 @@ func DefaultInterceptors(logger *slog.Logger) []connect.Interceptor {
 		NewAuthInterceptor(AuthConfig{Logger: logger}),
 		NewLoggingInterceptor(logger),
 	}
+}
+
+// TLSMiddleware injects TLS connection state into the request context.
+//
+// This middleware MUST be applied to the HTTP handler chain for mTLS authentication to work.
+// It extracts the TLS state from http.Request and makes it available to Connect interceptors.
+//
+// Usage:
+//
+//	mux := http.NewServeMux()
+//	mux.Handle(clusterv1connect.NewClusterServiceHandler(handler, connect.WithInterceptors(...)))
+//	server := &http.Server{
+//	    Handler: TLSMiddleware(mux),
+//	    TLSConfig: tlsConfig,
+//	}
+//	server.ListenAndServeTLS("cert.pem", "key.pem")
+func TLSMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Inject TLS state into context if connection is TLS
+		if r.TLS != nil {
+			ctx := context.WithValue(r.Context(), tlsStateKey{}, r.TLS)
+			r = r.WithContext(ctx)
+		}
+		next.ServeHTTP(w, r)
+	})
 }

@@ -92,6 +92,14 @@ type Session struct {
 // @req RQ-0101
 // @design DS-0101
 func NewSession(userID string) (*Session, error) {
+	// Parameter validation
+	if userID == "" {
+		return nil, ErrInvalidArgument.WithDetails("user_id is required")
+	}
+	if len(userID) > MaxUserIDLength {
+		return nil, ErrInvalidArgument.WithDetails("user_id exceeds maximum length")
+	}
+
 	id, err := GenerateSessionID()
 	if err != nil {
 		return nil, err
@@ -259,7 +267,11 @@ func (s *Session) ExtendExpiration(extension time.Duration) {
 }
 
 // Clone creates a deep copy of the session.
+// Returns nil if called on a nil receiver (defensive programming).
 func (s *Session) Clone() *Session {
+	if s == nil {
+		return nil
+	}
 	clone := *s
 	if s.Data != nil {
 		clone.Data = make(map[string]string, len(s.Data))
