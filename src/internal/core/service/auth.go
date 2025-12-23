@@ -257,21 +257,26 @@ func (s *AuthService) checkIPAllowlist(clientIP string, keyAllowlist []string) e
 
 // verifySecretHash verifies a secret against its hash(es).
 // Supports grace period for secret rotation.
+//
+// Security note: This function uses constant-time execution to prevent timing attacks.
+// Both hashes are always computed during grace period to avoid leaking information
+// about which hash matched or whether a grace period is active.
+// Trade-off: ~2x latency during grace periods (each Argon2 takes 50-100ms).
 func (s *AuthService) verifySecretHash(secret, currentHash, oldHash string, inGracePeriod bool) bool {
-	// Try current hash first
-	if verifyArgon2Hash(secret, currentHash) {
-		return true
-	}
+	// Always compute current hash
+	match1 := verifyArgon2Hash(secret, currentHash)
 
-	// During grace period, also try old hash
+	// Always compute old hash during grace period (constant-time execution)
+	match2 := false
 	if inGracePeriod && oldHash != "" {
-		return verifyArgon2Hash(secret, oldHash)
+		match2 = verifyArgon2Hash(secret, oldHash)
 	}
 
-	return false
+	return match1 || match2
 }
 
 // verifyArgon2Hash verifies a secret against an Argon2id hash.
+// @design DS-0201-安全与鉴权设计 § 2.3 密码学参数
 // Hash format: $argon2id$v=19$m=16384,t=2,p=2$<salt>$<hash>
 func verifyArgon2Hash(secret, hash string) bool {
 	// Parse hash components
@@ -299,9 +304,12 @@ func verifyArgon2Hash(secret, hash string) bool {
 		return false
 	}
 
-	// Compute hash with same parameters
-	// Standard params: memory=16384 KB, time=2, parallelism=2, keyLen=32
-	computedHash := argon2.IDKey([]byte(secret), salt, 2, 16384, 2, uint32(len(expectedHash)))
+	// Compute hash with parameters from DS-0201 § 2.3
+	computedHash := argon2.IDKey(
+		[]byte(secret), salt,
+		domain.Argon2Time, domain.Argon2Memory, domain.Argon2Parallelism,
+		uint32(len(expectedHash)),
+	)
 
 	// Constant-time comparison to prevent timing attacks
 	return subtle.ConstantTimeCompare(computedHash, expectedHash) == 1

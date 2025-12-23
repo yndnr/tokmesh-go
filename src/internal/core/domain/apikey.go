@@ -20,6 +20,25 @@ const (
 	APIKeySecretPrefix = "tmas_"
 )
 
+// Argon2 parameters for API Key secret hashing.
+// @design DS-0201-安全与鉴权设计 § 2.3 密码学参数
+const (
+	// Argon2Memory is the memory parameter in KB (16 MB).
+	Argon2Memory uint32 = 16384
+
+	// Argon2Time is the iteration count.
+	Argon2Time uint32 = 2
+
+	// Argon2Parallelism is the parallelism factor.
+	Argon2Parallelism uint8 = 2
+
+	// Argon2KeyLen is the output hash length in bytes.
+	Argon2KeyLen uint32 = 32
+
+	// Argon2SaltLen is the salt length in bytes.
+	Argon2SaltLen = 16
+)
+
 // Role defines the permission level of an API key.
 // Reference: specs/2-designs/DS-0201-安全与鉴权设计.md
 type Role string
@@ -361,18 +380,18 @@ func NewAPIKey(name string, role Role) (*APIKey, string, error) {
 	}, plainSecret, nil
 }
 
-// hashSecret hashes a secret using Argon2id.
+// hashSecret computes an Argon2id hash of the secret.
+// @design DS-0201-安全与鉴权设计 § 2.3 密码学参数
 // Returns the hash in the format: $argon2id$v=19$m=16384,t=2,p=2$<salt>$<hash>
 func hashSecret(secret string) (string, error) {
 	// Generate random salt
-	salt := make([]byte, 16)
+	salt := make([]byte, Argon2SaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
 
-	// Compute Argon2id hash
-	// Parameters: memory=16384 KB, time=2, parallelism=2, keyLen=32
-	hash := argon2.IDKey([]byte(secret), salt, 2, 16384, 2, 32)
+	// Compute Argon2id hash using constants from DS-0201 § 2.3
+	hash := argon2.IDKey([]byte(secret), salt, Argon2Time, Argon2Memory, Argon2Parallelism, Argon2KeyLen)
 
 	// Encode to standard format
 	saltB64 := base64.RawStdEncoding.EncodeToString(salt)

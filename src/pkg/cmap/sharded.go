@@ -14,7 +14,8 @@ import (
 	"sync"
 )
 
-// DefaultShardCount is the default number of shards (16 as per DS-0102).
+// DefaultShardCount is the default number of shards.
+// Reference: DS-0102 § 2.3 (recommends 16 for <100K sessions)
 const DefaultShardCount = 16
 
 // Map is a concurrent-safe sharded map.
@@ -58,6 +59,8 @@ func NewWithShards[K comparable, V any](shardCount int) *Map[K, V] {
 }
 
 // getShard returns the shard for a key using maphash for better distribution.
+// Note: This is the slow path for non-string keys (uses fmt.Sprintf + reflection).
+// For string keys, use getShardByString() for better performance.
 func (m *Map[K, V]) getShard(key K) *shard[K, V] {
 	var h maphash.Hash
 	h.SetSeed(m.seed)

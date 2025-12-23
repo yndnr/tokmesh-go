@@ -1,7 +1,10 @@
-// Package memory provides in-memory storage for TokMesh.
+// Package memory provides in-memory session storage for TokMesh.
 //
-// It implements the primary storage interface using concurrent-safe
+// It implements the SessionRepository interface using concurrent-safe
 // data structures with sharded locking for high performance.
+//
+// @req RQ-0101 核心数据模型
+// @design DS-0102 存储引擎设计
 package memory
 
 import (
@@ -79,6 +82,7 @@ func (s *Store) Get(_ context.Context, id string) (*domain.Session, error) {
 }
 
 // GetByToken retrieves a session by token hash.
+// @design DS-0102 § 2.3 索引查询
 func (s *Store) GetByToken(_ context.Context, tokenHash string) (*domain.Session, error) {
 	sessionID, ok := s.tokens.Get(tokenHash)
 	if !ok {
