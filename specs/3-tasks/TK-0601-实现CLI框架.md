@@ -1,6 +1,6 @@
 # TK-0601-实现CLI框架
 
-**状态**: ✅ 已完成 (command 4.9%, config 93.3%, repl 88.9%)
+**状态**: ✅ 已完成 (command 82.4%, config 86.7%, repl 88.9%, output 94.1%, connection 88.5%)
 **优先级**: P2
 **范围**: CLI 框架、连接管理、输出格式化
 **关联需求**: `specs/1-requirements/RQ-0602-CLI交互模式与连接管理.md`
