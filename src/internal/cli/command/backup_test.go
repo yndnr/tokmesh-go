@@ -12,10 +12,33 @@ func TestBackupCommand(t *testing.T) {
 	}
 }
 
-// TODO: Add comprehensive tests when BackupCommand is implemented
-// Tests should cover:
-// - snapshot subcommand with --description and --wait flags
-// - list subcommand
-// - download subcommand with --output flag
-// - restore subcommand with --id, --file, and --force flags
-// - status subcommand
+// Test stub functions - these are placeholders that return nil
+// Once implemented, these tests will need to be expanded
+
+func TestBackupCreate_Stub(t *testing.T) {
+	err := backupCreate(nil)
+	if err != nil {
+		t.Errorf("backupCreate() stub should return nil, got: %v", err)
+	}
+}
+
+func TestBackupRestore_Stub(t *testing.T) {
+	err := backupRestore(nil)
+	if err != nil {
+		t.Errorf("backupRestore() stub should return nil, got: %v", err)
+	}
+}
+
+func TestBackupList_Stub(t *testing.T) {
+	err := backupList(nil)
+	if err != nil {
+		t.Errorf("backupList() stub should return nil, got: %v", err)
+	}
+}
+
+func TestBackupDelete_Stub(t *testing.T) {
+	err := backupDelete(nil)
+	if err != nil {
+		t.Errorf("backupDelete() stub should return nil, got: %v", err)
+	}
+}
