@@ -379,26 +379,31 @@ func (s *SessionService) Touch(ctx context.Context, req *TouchSessionRequest) (*
 		return nil, domain.ErrSessionExpired.WithDetails(fmt.Sprintf("session %s has expired", req.SessionID))
 	}
 
-	// 4. Update last_active and optionally last_access_ip
+	// 4. Update last_active and optionally last_access_ip with optimistic locking
 	now := time.Now().UnixMilli()
+	oldVersion := session.Version
 	session.LastActive = now
 	if req.ClientIP != "" {
 		session.LastAccessIP = req.ClientIP
 	}
+	session.IncrVersion()
 
 	// 5. Save to storage (with optimistic locking)
-	if err := s.repo.Update(ctx, session, session.Version); err != nil {
+	if err := s.repo.Update(ctx, session, oldVersion); err != nil {
 		if domain.IsDomainError(err, "TM-SESS-4091") {
 			// Version conflict - retry once with fresh data
 			session, err = s.repo.Get(ctx, req.SessionID)
 			if err != nil {
 				return nil, err
 			}
+			// Reapply changes with correct version
+			oldVersion = session.Version
 			session.LastActive = now
 			if req.ClientIP != "" {
 				session.LastAccessIP = req.ClientIP
 			}
-			if err := s.repo.Update(ctx, session, session.Version); err != nil {
+			session.IncrVersion()
+			if err := s.repo.Update(ctx, session, oldVersion); err != nil {
 				return nil, domain.ErrStorageError.WithCause(err)
 			}
 		} else {
@@ -755,8 +760,9 @@ func (s *SessionService) Update(ctx context.Context, req *UpdateSessionRequest) 
 	// 4. Update fields if provided
 	oldVersion := session.Version
 
-	if req.UserID != "" {
-		session.UserID = req.UserID
+	// UserID is immutable - reject attempts to change it
+	if req.UserID != "" && req.UserID != session.UserID {
+		return nil, domain.ErrInvalidArgument.WithDetails("cannot change session user_id (immutable field)")
 	}
 	if req.DeviceID != "" {
 		session.DeviceID = req.DeviceID

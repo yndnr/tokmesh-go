@@ -151,12 +151,21 @@ func (s *Session) TTLDuration() time.Duration {
 }
 
 // Touch updates the LastActive timestamp and optionally the access info.
+// Input strings are truncated to their maximum allowed lengths to prevent DoS attacks.
 func (s *Session) Touch(ip, userAgent string) {
 	s.LastActive = time.Now().UnixMilli()
 	if ip != "" {
+		// Truncate to prevent memory bloat from malicious input
+		if len(ip) > MaxIPAddressLength {
+			ip = ip[:MaxIPAddressLength]
+		}
 		s.LastAccessIP = ip
 	}
 	if userAgent != "" {
+		// Truncate to prevent memory bloat from malicious input
+		if len(userAgent) > MaxUserAgentLength {
+			userAgent = userAgent[:MaxUserAgentLength]
+		}
 		s.LastAccessUA = userAgent
 	}
 }

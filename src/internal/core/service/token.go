@@ -160,13 +160,19 @@ func (s *TokenService) Validate(ctx context.Context, req *ValidateTokenRequest) 
 
 	// 6. Optionally touch the session (update last access info)
 	if req.Touch {
-		session.Touch(req.ClientIP, req.UserAgent)
-		session.IncrVersion()
+		// Clone session before modification to ensure consistency
+		updated := session.Clone()
+		updated.Touch(req.ClientIP, req.UserAgent)
+		updated.IncrVersion()
 
 		// Update in storage (best-effort, don't fail validation on update error)
-		if err := s.repo.UpdateSession(ctx, session); err != nil {
-			// Log error but don't fail validation
-			// TODO: Add structured logging
+		if err := s.repo.UpdateSession(ctx, updated); err != nil {
+			// Touch failed, return original session (not updated) for consistency
+			// The session is still valid, just not updated
+			// TODO: Add structured logging and metrics for monitoring
+		} else {
+			// Touch succeeded, return updated session
+			session = updated
 		}
 	}
 
@@ -176,12 +182,23 @@ func (s *TokenService) Validate(ctx context.Context, req *ValidateTokenRequest) 
 	}, nil
 }
 
+// MaxNonceLength is the maximum allowed nonce length to prevent DoS attacks.
+const MaxNonceLength = 256
+
 // CheckNonce checks if a nonce has been used before (anti-replay protection).
 // Returns an error if the nonce has been seen or the timestamp is out of window.
 //
 // @req RQ-0202
 // @design DS-0103
 func (s *TokenService) CheckNonce(_ context.Context, nonce string, timestamp int64) error {
+	// 0. Validate nonce length (prevent DoS attacks with ultra-long nonces)
+	if nonce == "" {
+		return domain.ErrInvalidArgument.WithDetails("nonce cannot be empty")
+	}
+	if len(nonce) > MaxNonceLength {
+		return domain.ErrInvalidArgument.WithDetails("nonce too long (max 256)")
+	}
+
 	// 1. Check timestamp window using configured value
 	now := time.Now().UnixMilli()
 	diff := now - timestamp
@@ -333,21 +350,24 @@ func (c *NonceCache) addLocked(nonce string) {
 }
 
 // cleanupExpiredLocked removes expired entries while holding the lock.
+// Note: LRU operations (MoveToFront) disrupt the time ordering in the list,
+// so we must scan all entries rather than stopping at the first non-expired one.
 func (c *NonceCache) cleanupExpiredLocked() {
 	now := time.Now()
-	// Start from back (oldest) and remove expired entries
-	for elem := c.order.Back(); elem != nil; {
+	// Collect expired entries first to avoid modifying list during iteration
+	var toRemove []*list.Element
+	for elem := c.order.Back(); elem != nil; elem = elem.Prev() {
 		entry := elem.Value.(*nonceEntry)
 		if now.Sub(entry.createdAt) >= c.ttl {
-			prev := elem.Prev()
-			delete(c.items, entry.nonce)
-			c.order.Remove(elem)
-			elem = prev
-		} else {
-			// Since we're iterating from oldest, once we find a non-expired entry,
-			// all remaining entries are also non-expired
-			break
+			toRemove = append(toRemove, elem)
 		}
+	}
+
+	// Remove collected expired entries
+	for _, elem := range toRemove {
+		entry := elem.Value.(*nonceEntry)
+		delete(c.items, entry.nonce)
+		c.order.Remove(elem)
 	}
 }
 
