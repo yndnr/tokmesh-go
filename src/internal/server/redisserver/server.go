@@ -66,6 +66,7 @@ type Server struct {
 	logger     *slog.Logger
 	plainLn    net.Listener
 	tlsLn      net.Listener
+	lnMu       sync.Mutex // protects plainLn and tlsLn
 	running    atomic.Bool
 	wg         sync.WaitGroup
 }
@@ -184,7 +185,9 @@ func (s *Server) startPlain(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.lnMu.Lock()
 	s.plainLn = ln
+	s.lnMu.Unlock()
 	return s.acceptLoop(ctx, ln)
 }
 
@@ -200,7 +203,9 @@ func (s *Server) startTLS(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.lnMu.Lock()
 	s.tlsLn = ln
+	s.lnMu.Unlock()
 	return s.acceptLoop(ctx, ln)
 }
 
@@ -211,14 +216,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var firstErr error
 
 	// Close listeners to break accept loops.
-	if s.plainLn != nil {
-		if err := s.plainLn.Close(); err != nil && firstErr == nil {
+	s.lnMu.Lock()
+	plainLn := s.plainLn
+	tlsLn := s.tlsLn
+	s.lnMu.Unlock()
+
+	if plainLn != nil {
+		if err := plainLn.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 
-	if s.tlsLn != nil {
-		if err := s.tlsLn.Close(); err != nil && firstErr == nil {
+	if tlsLn != nil {
+		if err := tlsLn.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
